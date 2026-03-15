@@ -216,6 +216,37 @@ class ReviewItemDialog(tk.Toplevel):
             padding=(6, 3),
         ).pack(side="bottom", fill="x")
 
+        # ── Fixed top: mini-header (always visible above canvas) ───────
+        mini_hdr = tk.Frame(self, bg="#263238", padx=8, pady=4)
+        mini_hdr.pack(side="top", fill="x")
+        mini_hdr.columnconfigure(1, weight=1)
+
+        self._mini_id_lbl = tk.Label(
+            mini_hdr,
+            text=f"Task #{self._task_id}",
+            bg="#263238", fg="#eceff1",
+            font=("Segoe UI", 10, "bold"),
+        )
+        self._mini_id_lbl.pack(side="left", padx=(0, 8))
+
+        self._mini_badge = tk.Label(
+            mini_hdr,
+            text="  loading…  ",
+            bg="#455a64", fg="#eceff1",
+            font=("Segoe UI", 9),
+            relief="flat", padx=6, pady=1,
+        )
+        self._mini_badge.pack(side="left", padx=(0, 8))
+
+        self._mini_title_lbl = tk.Label(
+            mini_hdr,
+            text="",
+            bg="#263238", fg="#b0bec5",
+            font=("Segoe UI", 9),
+            anchor="w",
+        )
+        self._mini_title_lbl.pack(side="left", fill="x", expand=True)
+
         # ── Scrollable content area ────────────────────────────────────
         content_outer = ttk.Frame(self)
         content_outer.pack(side="top", fill="both", expand=True)
@@ -336,6 +367,18 @@ class ReviewItemDialog(tk.Toplevel):
         ttk.Button(op_inner, text="[Change]", command=self._on_change_operator).pack(
             side="left", padx=(8, 0)
         )
+
+        # Previous decision row — populated later by _populate_detail when latest_result exists
+        prev_row = op_row + 1
+        ttk.Label(frame, text="Previous:", anchor="e").grid(
+            row=prev_row, column=0, sticky="e", padx=(0, 6), pady=2
+        )
+        self._prev_decision_var = tk.StringVar(value="—")
+        self._prev_decision_lbl = ttk.Label(
+            frame, textvariable=self._prev_decision_var,
+            anchor="w", foreground="#555555",
+        )
+        self._prev_decision_lbl.grid(row=prev_row, column=1, sticky="ew", pady=2)
 
     def _build_section_chart_source(self, row: int) -> None:
         task_data = self._task_data
@@ -681,6 +724,26 @@ class ReviewItemDialog(tk.Toplevel):
         self._status_badge.configure(text=f"  {review_status}  ", fg=fg, bg=bg)
         self._set_status(f"Task #{self._task_id} loaded — status: {review_status}")
         self._update_button_states(review_status)
+
+        # Update sticky mini-header
+        self._mini_badge.configure(text=f"  {review_status}  ", bg=fg, fg="white")
+        artist = ce.get("artist_raw") or ""
+        title  = ce.get("song_title_raw") or ""
+        header_title = f"{artist} — {title}" if artist or title else ""
+        self._mini_title_lbl.configure(text=header_title)
+
+        # Update previous decision row in Task Info
+        if lr:
+            decision   = lr.get("decision") or "—"
+            op_id      = lr.get("operator_id") or "?"
+            reviewed   = (lr.get("reviewed_at") or "")[:10]
+            prev_text  = f"{decision}  by {op_id}  on {reviewed}" if reviewed else f"{decision}  by {op_id}"
+            dfg, _dbg  = _badge_colors(decision)
+            self._prev_decision_var.set(prev_text)
+            self._prev_decision_lbl.configure(foreground=dfg)
+        else:
+            self._prev_decision_var.set("—")
+            self._prev_decision_lbl.configure(foreground="#555555")
 
         # P3: give focus to lyrics so operator can paste immediately
         self._lyrics_text.focus_set()
