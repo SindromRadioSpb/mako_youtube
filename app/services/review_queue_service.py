@@ -243,6 +243,53 @@ async def no_useful_text(
     )
 
 
+async def reopen_task(
+    session: AsyncSession,
+    task_id: int,
+    operator_id: str,
+) -> ReviewTask:
+    """
+    Reopen a terminal review task for re-editing.
+
+    Transitions the task back to in_review and resets completed_at so the
+    operator can submit a new decision.  The existing ReviewResult rows are
+    preserved as audit history.
+
+    Raises:
+        LookupError: task not found.
+        ValueError:  task is not in a terminal state.
+    """
+    task = await _get_task_or_raise(session, task_id)
+
+    _TERMINAL = (
+        ReviewStatus.approved.value,
+        ReviewStatus.approved_with_edits.value,
+        ReviewStatus.rejected.value,
+        ReviewStatus.no_useful_text.value,
+    )
+    if task.review_status not in _TERMINAL:
+        raise ValueError(
+            f"Task {task_id} cannot be reopened: "
+            f"current status is {task.review_status!r} (must be a terminal state)"
+        )
+
+    previous_status = task.review_status
+    task.review_status = ReviewStatus.in_review.value
+    task.assigned_to = operator_id
+    task.completed_at = None
+
+    await _update_entry_status(session, task.chart_entry_id, PipelineStatus.in_manual_review)
+    await session.flush()
+
+    await audit_service.review_reopened(
+        session,
+        task_id=task_id,
+        operator_id=operator_id,
+        previous_status=previous_status,
+    )
+    return task
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------

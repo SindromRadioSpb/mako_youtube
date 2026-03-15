@@ -187,4 +187,5 @@ class ReviewTaskDetailResponse(BaseModel):
     review_status: str
     chart_entry: Optional[ChartEntryDTO] = None
     youtube_video: Optional[YouTubeVideoDTO] = None
+    latest_result: Optional[ReviewResultDTO] = None  # populated when task has been reviewed
 

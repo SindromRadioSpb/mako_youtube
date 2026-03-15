@@ -20,7 +20,7 @@ from app.domain.dto import (
     ReviewTaskSummary,
     YouTubeVideoDTO,
 )
-from app.infra.sa_models import ChartEntry, ReviewTask, YouTubeVideo, async_session_factory
+from app.infra.sa_models import ChartEntry, ReviewResult, ReviewTask, YouTubeVideo, async_session_factory
 from app.services import review_queue_service
 
 log = structlog.get_logger(__name__)
@@ -108,11 +108,20 @@ async def get_task(
     )
     yt_video = yt_result.scalar_one_or_none()
 
+    latest_result_q = await session.execute(
+        select(ReviewResult)
+        .where(ReviewResult.review_task_id == task_id)
+        .order_by(ReviewResult.reviewed_at.desc())
+        .limit(1)
+    )
+    latest_result = latest_result_q.scalar_one_or_none()
+
     return ReviewTaskDetailResponse(
         task_id=task.id,
         review_status=task.review_status,
         chart_entry=ChartEntryDTO.model_validate(entry) if entry else None,
         youtube_video=YouTubeVideoDTO.model_validate(yt_video) if yt_video else None,
+        latest_result=ReviewResultDTO.model_validate(latest_result) if latest_result else None,
     )
 
 
@@ -223,6 +232,31 @@ async def reject_task(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     return ReviewResultDTO.model_validate(result)
+
+
+@router.post(
+    "/tasks/{task_id}/reopen",
+    response_model=ReviewTaskDTO,
+    summary="Reopen a terminal task for re-editing",
+)
+async def reopen_task(
+    task_id: int,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+) -> ReviewTaskDTO:
+    operator_id: str = body.get("operator_id", "")
+    if not operator_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="operator_id is required",
+        )
+    try:
+        task = await review_queue_service.reopen_task(session, task_id, operator_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    return ReviewTaskDTO.model_validate(task)
 
 
 @router.post(

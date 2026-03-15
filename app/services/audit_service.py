@@ -295,6 +295,23 @@ async def review_rejected(
     )
 
 
+async def review_reopened(
+    session: AsyncSession,
+    task_id: int,
+    operator_id: str,
+    previous_status: str,
+) -> AuditEvent:
+    return await log_event(
+        session,
+        entity_type="review_task",
+        entity_id=str(task_id),
+        event_type="review_reopened",
+        payload={"previous_status": previous_status},
+        actor_type="operator",
+        actor_id=operator_id,
+    )
+
+
 async def review_no_useful_text(
     session: AsyncSession,
     task_id: int,

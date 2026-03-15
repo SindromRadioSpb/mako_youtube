@@ -532,6 +532,12 @@ class ReviewItemDialog(tk.Toplevel):
         )
         self._start_btn.pack(side="left", padx=4)
 
+        # Reopen button — shown only for terminal states
+        self._reopen_btn = ttk.Button(
+            btn_frame, text="↺ Reopen for Editing", command=self._on_reopen
+        )
+        # Not packed yet — shown conditionally by _update_button_states
+
         # P1: workflow hint — shown only when pending
         self._hint_lbl = ttk.Label(
             btn_frame,
@@ -640,11 +646,28 @@ class ReviewItemDialog(tk.Toplevel):
                 f"{char_count} chars" if char_count else "no description"
             )
 
-        # Pre-fill final fields from chart_entry (primary source)
-        if not self._final_artist_var.get():
+        # Pre-fill final fields:
+        # Priority 1 — latest ReviewResult (re-edit case: preserve previous work)
+        # Priority 2 — chart_entry raw values (first-time open)
+        lr = full_task.get("latest_result") or {}
+        if lr.get("final_artist"):
+            self._final_artist_var.set(lr["final_artist"])
+        elif not self._final_artist_var.get():
             self._final_artist_var.set(ce.get("artist_raw") or "")
-        if not self._final_title_var.get():
+
+        if lr.get("final_song_title"):
+            self._final_title_var.set(lr["final_song_title"])
+        elif not self._final_title_var.get():
             self._final_title_var.set(ce.get("song_title_raw") or "")
+
+        if lr.get("final_lyrics_text") and not self._lyrics_text.get("1.0", "end-1c").strip():
+            self._lyrics_text.delete("1.0", "end")
+            self._lyrics_text.insert("1.0", lr["final_lyrics_text"])
+            self._lyrics_text.tag_add("rtl", "1.0", "end")
+
+        if lr.get("review_notes") and not self._review_notes_text.get("1.0", "end-1c").strip():
+            self._review_notes_text.delete("1.0", "end")
+            self._review_notes_text.insert("1.0", lr["review_notes"])
 
         # Store prefill snapshot for approve-with-edits diff check (P2)
         self._prefill = {
@@ -675,6 +698,7 @@ class ReviewItemDialog(tk.Toplevel):
         if review_status == "pending":
             # Start button visible but action buttons also enabled —
             # they will auto-call start first if task is still pending.
+            self._reopen_btn.pack_forget()
             self._start_btn.pack(side="left", padx=4)
             self._start_btn.configure(state="normal")
             self._hint_lbl.pack(side="left", padx=(0, 4))
@@ -686,6 +710,7 @@ class ReviewItemDialog(tk.Toplevel):
             _Tooltip(self._no_text_btn,        "Mark as no useful text (auto-starts review if needed)")
         elif review_status == "in_review":
             # P3: hide start button
+            self._reopen_btn.pack_forget()
             self._start_btn.pack_forget()
             self._hint_lbl.pack_forget()
             for b in action_btns:
@@ -693,6 +718,8 @@ class ReviewItemDialog(tk.Toplevel):
         else:  # terminal
             self._start_btn.pack_forget()
             self._hint_lbl.pack_forget()
+            self._reopen_btn.pack(side="left", padx=4)
+            _Tooltip(self._reopen_btn, "Reopen this task for re-editing and re-submission")
             for b in action_btns:
                 b.configure(state="disabled")
 
@@ -756,6 +783,19 @@ class ReviewItemDialog(tk.Toplevel):
             f"/api/review/tasks/{self._task_id}/start",
             {"operator_id": op},
             success_msg="Review started",
+            close_on_success=False,
+            reload_on_success=True,
+        )
+
+    def _on_reopen(self) -> None:
+        op = self._ensure_operator_id()
+        if not op:
+            return
+        self._call_api_async(
+            "POST",
+            f"/api/review/tasks/{self._task_id}/reopen",
+            {"operator_id": op},
+            success_msg="Task reopened for re-editing",
             close_on_success=False,
             reload_on_success=True,
         )
