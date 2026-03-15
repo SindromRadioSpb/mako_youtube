@@ -65,14 +65,16 @@ def _make_session(
 
     async def _execute(stmt):
         mock_result = MagicMock()
-        # Determine what the query is for by inspecting the statement repr
-        stmt_str = str(stmt)
-        if "review_result" in stmt_str.lower() and existing_result is not None:
+        # Determine what the query is for by inspecting the FROM clause.
+        # Use "from review_result" to distinguish from queries that merely
+        # reference the review_task_id column on review_result rows.
+        stmt_str = str(stmt).lower()
+        if "from review_result" in stmt_str:
             mock_result.scalar_one_or_none.return_value = existing_result
-        elif "review_task" in stmt_str.lower() and task is not None:
+        elif "from review_task" in stmt_str and task is not None:
             mock_result.scalar_one_or_none.return_value = task
             mock_result.scalars.return_value.all.return_value = [task]
-        elif "chart_entry" in stmt_str.lower() and entry is not None:
+        elif "chart_entry" in stmt_str and entry is not None:
             mock_result.scalar_one_or_none.return_value = entry
         else:
             mock_result.scalar_one_or_none.return_value = None

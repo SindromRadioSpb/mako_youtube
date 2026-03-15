@@ -322,17 +322,33 @@ async def _complete_task(
     task.assigned_to = task.assigned_to or operator_id
     task.completed_at = datetime.now(tz=timezone.utc)
 
-    result = ReviewResult(
-        review_task_id=task_id,
-        operator_id=operator_id,
-        final_artist=final_artist,
-        final_song_title=final_song_title,
-        final_lyrics_text=final_lyrics_text,
-        decision=decision.value,
-        review_notes=review_notes,
-        reviewed_at=datetime.now(tz=timezone.utc),
+    # Upsert ReviewResult: update if one already exists (re-edit case),
+    # otherwise insert. The unique constraint on review_task_id means only
+    # one result row per task; audit history is preserved in audit_event.
+    existing_q = await session.execute(
+        select(ReviewResult).where(ReviewResult.review_task_id == task_id)
     )
-    session.add(result)
+    result = existing_q.scalar_one_or_none()
+    if result is not None:
+        result.operator_id = operator_id
+        result.final_artist = final_artist
+        result.final_song_title = final_song_title
+        result.final_lyrics_text = final_lyrics_text
+        result.decision = decision.value
+        result.review_notes = review_notes
+        result.reviewed_at = datetime.now(tz=timezone.utc)
+    else:
+        result = ReviewResult(
+            review_task_id=task_id,
+            operator_id=operator_id,
+            final_artist=final_artist,
+            final_song_title=final_song_title,
+            final_lyrics_text=final_lyrics_text,
+            decision=decision.value,
+            review_notes=review_notes,
+            reviewed_at=datetime.now(tz=timezone.utc),
+        )
+        session.add(result)
 
     await _update_entry_status(session, task.chart_entry_id, pipeline_status)
     await session.flush()
