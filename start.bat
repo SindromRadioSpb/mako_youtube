@@ -8,14 +8,24 @@ set DB_PASS=openclaw
 set DB_NAME=openclaw_mako
 set PYTHONIOENCODING=utf-8
 
-:: ── Auto-select available API port (prefer 8000, fallback to 8001) ────────
-set API_PORT=8000
-netstat -ano 2>nul | findstr "LISTENING" | findstr ":8000 " >nul
-if not errorlevel 1 (
-    echo [warn] Port 8000 is occupied, using 8001 instead.
-    echo        To use 8000 after next reboot, no action needed.
-    set API_PORT=8001
+:: ── Auto-select available API port (try 8000, 8001, 8080, 9000, 9001) ──────
+set API_PORT=
+for %%P in (8000 8001 8080 9000 9001) do (
+    if not defined API_PORT (
+        netstat -ano 2>nul | findstr "LISTENING" | findstr ":%%P " >nul
+        if errorlevel 1 (
+            set API_PORT=%%P
+        ) else (
+            echo [warn] Port %%P is occupied, trying next...
+        )
+    )
 )
+if not defined API_PORT (
+    echo ERROR: No free port found in range 8000/8001/8080/9000/9001.
+    pause
+    exit /b 1
+)
+echo [info] Using API port %API_PORT%.
 
 set DATABASE_URL=postgresql+asyncpg://%DB_USER%:%DB_PASS%@localhost:%DB_PORT%/%DB_NAME%
 set API_BASE_URL=http://localhost:%API_PORT%
