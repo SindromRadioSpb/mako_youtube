@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: openclaw_mako_db
+    environment:
+      POSTGRES_USER: openclaw
+      POSTGRES_PASSWORD: openclaw
+      POSTGRES_DB: openclaw_mako
+    ports:
+      - "5433:5432"
+    volumes:
+      - openclaw_mako_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openclaw -d openclaw_mako"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  openclaw_mako_pgdata:

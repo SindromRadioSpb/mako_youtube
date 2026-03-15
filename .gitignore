@@ -8,3 +8,7 @@ __pycache__/
 .env
 dist/
 build/
+task/
+exports/tmp/*.docx
+uvicorn_*.log
+*.log
