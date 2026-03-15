@@ -1,0 +1,997 @@
+OpenClaw Mako Hitlist -> YouTube Raw Metadata -> Manual Review
+Product Concept + Stage Scope + Technical Plan (v2)
+
+1. Executive concept
+
+This program is a semi-automatic music data ingestion and manual curation system built around the official Israeli music chart at:
+https://hitlist.mako.co.il/
+
+At the current stage, the system is designed to collect chart entries from Mako Hitlist, extract only YouTube links, fetch raw YouTube metadata, and route records into a manual operator review workflow.
+
+The system is intentionally not trying to solve full automatic lyrics extraction yet. Instead, it focuses on building a stable, production-oriented ingestion pipeline and a reliable operator workflow for manual finalization of song records.
+
+The main purpose of this stage is to create a trustworthy operational foundation:
+- stable chart ingestion
+- deterministic YouTube metadata capture
+- operator-facing review queue
+- clean separation between raw and final data
+- auditability
+- future readiness for automation
+
+2. Current stage objective
+
+The goal of this stage is to implement a production-ready metadata ingestion + manual curation workflow.
+
+The system must:
+- ingest rows from the Mako Hitlist chart
+- parse chart position, raw artist, raw song title, and outbound links
+- keep only the YouTube link if present
+- fetch and store raw YouTube metadata
+- create a manual review task for the operator
+- allow the operator to manually finalize the record:
+  - final artist
+  - final song title
+  - final lyrics text
+- persist both raw data and final reviewed data
+- maintain audit trail and deduplication
+
+3. Why this architecture is chosen now
+
+This architecture is chosen intentionally for the first production stage.
+
+Automatic lyrics extraction is currently the most fragile part of the possible pipeline. It is highly dependent on inconsistent YouTube descriptions, heuristic cleanup quality, and edge-case handling. Introducing that layer too early would increase complexity, reduce determinism, and make the MVP harder to validate and operate.
+
+A raw metadata + manual review design is the fastest and safest path to a stable MVP because it:
+- minimizes false positives
+- removes the most brittle NLP/heuristic layer
+- gives the operator full control over final data quality
+- creates a validated corpus of real raw descriptions and reviewed outputs
+- prepares the system for future partial automation based on real production data
+
+At this stage, operational reliability and auditability are more important than maximum automation.
+
+4. Operator workflow
+
+The expected operator workflow is:
+
+1. The system ingests chart rows from Mako Hitlist.
+2. The system extracts only the YouTube link from each row, if present.
+3. The system fetches raw YouTube metadata:
+   - video title
+   - channel title
+   - description raw
+   - published_at when available
+4. The system creates a manual review task.
+5. The operator opens the review task.
+6. The operator reviews:
+   - chart position
+   - raw artist/title
+   - YouTube URL
+   - YouTube title/channel
+   - raw YouTube description
+7. The operator manually enters or corrects:
+   - final artist
+   - final song title
+   - final lyrics text
+8. The operator chooses one final decision:
+   - approve
+   - approve with edits
+   - reject
+   - no useful text
+
+5. In-scope for this stage
+
+Included in this stage:
+- Mako Hitlist ingestion
+- chart row parsing
+- extraction of outbound links
+- selection of YouTube link only
+- YouTube URL normalization
+- youtube_video_id extraction
+- raw YouTube metadata fetch
+- storage of raw chart and YouTube metadata
+- manual review queue
+- manual review write-path
+- audit trail
+- retry policy for transient failures
+- deduplication by youtube_video_id
+- smoke checks and automated tests
+
+6. Out-of-scope for this stage
+
+Not included in this stage:
+- automatic lyrics extraction
+- LLM-based lyrics cleanup
+- subtitle or captions parsing
+- Spotify ingestion
+- Apple Music ingestion
+- publication pipeline
+- auto-approval
+- confidence scoring for lyrics extraction
+- cross-platform music metadata aggregation
+- recommendation or ranking logic
+- downstream export/publishing workflows
+
+7. MVP success criteria
+
+The MVP is considered successful when:
+- Mako chart ingestion works reliably end-to-end
+- only the YouTube URL is selected from each chart row
+- raw YouTube metadata is stored correctly
+- a manual review task is created automatically
+- the operator can complete the review from the UI
+- raw data and final reviewed data are stored separately
+- audit trail exists for key transitions and review actions
+- deduplication works by youtube_video_id
+- the system runs without manual database intervention for normal cases
+- the system is ready for future automation layers without schema redesign
+
+8. Architectural decision
+
+At the current stage, the system is implemented as a metadata ingestion + manual curation pipeline:
+OpenClaw automatically collects chart entries and raw YouTube metadata, while the operator manually creates the final song text and approves the final record.
+
+9. Repo audit findings
+
+- The target scope at this stage is intentionally narrowed:
+  - no automatic lyrics extraction
+  - no LLM cleanup
+  - no auto-approval
+- OpenClaw is used as the orchestration layer:
+  - pipeline execution
+  - browser automation for Mako
+  - step routing
+  - review queue task creation
+  - logging
+- Data source:
+  - https://hitlist.mako.co.il/
+- From each chart row we collect:
+  - chart position
+  - raw artist/title
+  - only the YouTube URL, if present
+- From YouTube we store only raw metadata:
+  - youtube_video_id
+  - canonical_url
+  - video_title
+  - channel_title
+  - description_raw
+  - published_at when available
+- The final lyrics text is created manually by the operator.
+- Architectural goal of this stage:
+  - first build a reliable ingestion + review pipeline
+  - then add higher automation on top of the accumulated corpus
+
+10. Plan
+
+PATCH-01 - Domain model and state machine
+Introduce a minimal canonical model:
+- chart snapshot
+- chart entry
+- YouTube video metadata
+- review task
+- review result
+
+Introduce pipeline statuses:
+- discovered
+- youtube_found
+- youtube_missing
+- metadata_fetched
+- metadata_failed
+- ready_for_manual_review
+- in_manual_review
+- approved
+- approved_with_edits
+- rejected
+- no_useful_text
+- error
+
+PATCH-02 - DB schema v1
+Create the minimal database schema for:
+- chart snapshots
+- chart entries
+- YouTube metadata
+- review queue
+- review results
+- audit events
+
+PATCH-03 - Mako ingestion
+Implement the ingestion layer:
+- open the chart page
+- extract table/card rows
+- collect raw artist/title/position
+- extract only the YouTube URL
+
+PATCH-04 - YouTube metadata fetch
+Implement the metadata fetch layer:
+- extract youtube_video_id
+- canonicalize YouTube URL
+- fetch and store raw metadata
+
+PATCH-05 - Review queue
+After successful metadata fetch:
+- create a review task
+- move the record to ready_for_manual_review
+
+PATCH-06 - Manual review UI
+The operator must see:
+- raw chart data
+- raw YouTube metadata
+- raw description
+- editable fields for manual finalization
+
+PATCH-07 - Audit / logging / retries
+Add:
+- structured logs
+- retry policy only for retryable errors
+- audit events for key transitions
+
+PATCH-08 - Reprocessing readiness
+Prepare from day one:
+- deduplication by youtube_video_id
+- metadata re-fetch capability
+- reopening review tasks
+- scraper/fetcher versioning
+
+11. Files
+
+Backend / services
+- app/services/mako_chart_service.py
+- app/services/youtube_metadata_service.py
+- app/services/review_queue_service.py
+- app/services/audit_service.py
+
+Domain / DTO
+- app/domain/dto.py
+- app/domain/statuses.py
+
+DB / models / migrations
+- app/infra/sa_models.py
+- app/migrations/001_mako_youtube_review_init.sql
+
+API
+- app/api/chart.py
+- app/api/youtube.py
+- app/api/review.py
+- app/api/admin.py
+
+OpenClaw workflow docs/config
+- docs/OPENCLAW_MAKO_YOUTUBE_PIPELINE.md
+- docs/MANUAL_REVIEW_WORKFLOW.md
+- docs/DATA_MODEL_MAKO_YOUTUBE.md
+
+UI
+- app/ui/review_queue_panel.py
+- app/ui/review_item_dialog.py
+
+Tests
+- tests/test_mako_chart_service.py
+- tests/test_youtube_metadata_service.py
+- tests/test_review_queue_service.py
+- tests/test_pipeline_state_machine.py
+
+12. Canonical domain model
+
+12.1. ChartSnapshot
+One chart collection run.
+
+Fields:
+- id
+- source_name
+- source_url
+- snapshot_date
+- fetched_at
+- status
+- raw_payload_json
+- scraper_version
+- notes
+
+12.2. ChartEntry
+One row from the chart.
+
+Fields:
+- id
+- snapshot_id
+- chart_position
+- artist_raw
+- song_title_raw
+- artist_norm
+- song_title_norm
+- youtube_url
+- youtube_video_id
+- has_youtube
+- pipeline_status
+- created_at
+- updated_at
+
+12.3. YouTubeVideo
+Raw YouTube data.
+
+Fields:
+- id
+- youtube_video_id
+- canonical_url
+- video_title
+- channel_title
+- description_raw
+- published_at
+- metadata_fetched_at
+- fetch_status
+- fetch_error
+- fetcher_version
+- created_at
+- updated_at
+
+12.4. ReviewTask
+Manual processing queue.
+
+Fields:
+- id
+- chart_entry_id
+- youtube_video_id_ref
+- review_status
+- assigned_to
+- priority
+- created_at
+- started_at
+- completed_at
+
+12.5. ReviewResult
+Final manually approved result.
+
+Fields:
+- id
+- review_task_id
+- operator_id
+- final_artist
+- final_song_title
+- final_lyrics_text
+- decision
+- review_notes
+- reviewed_at
+
+12.6. AuditEvent
+Lifecycle audit log.
+
+Fields:
+- id
+- entity_type
+- entity_id
+- event_type
+- event_payload_json
+- created_at
+- actor_type
+- actor_id
+
+13. State machine
+
+13.1. Pipeline status for chart entry
+- discovered
+- youtube_found
+- youtube_missing
+- metadata_fetched
+- metadata_failed
+- ready_for_manual_review
+- in_manual_review
+- approved
+- approved_with_edits
+- rejected
+- no_useful_text
+- error
+
+13.2. Review status for review task
+- pending
+- in_review
+- approved
+- approved_with_edits
+- rejected
+- no_useful_text
+
+13.3. Happy path
+discovered
+-> youtube_found
+-> metadata_fetched
+-> ready_for_manual_review
+-> in_manual_review
+-> approved
+
+13.4. Negative paths
+
+No YouTube
+discovered
+-> youtube_missing
+
+Metadata fetch failure
+youtube_found
+-> metadata_failed
+
+Description has no useful text
+ready_for_manual_review
+-> in_manual_review
+-> no_useful_text
+
+14. SQL schema v1
+
+BEGIN;
+
+CREATE TABLE chart_snapshot (
+    id BIGSERIAL PRIMARY KEY,
+    source_name TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    snapshot_date DATE NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status TEXT NOT NULL,
+    raw_payload_json JSONB,
+    scraper_version TEXT,
+    notes TEXT
+);
+
+CREATE TABLE chart_entry (
+    id BIGSERIAL PRIMARY KEY,
+    snapshot_id BIGINT NOT NULL REFERENCES chart_snapshot(id) ON DELETE CASCADE,
+    chart_position INTEGER NOT NULL,
+    artist_raw TEXT,
+    song_title_raw TEXT,
+    artist_norm TEXT,
+    song_title_norm TEXT,
+    youtube_url TEXT,
+    youtube_video_id TEXT,
+    has_youtube BOOLEAN NOT NULL DEFAULT FALSE,
+    pipeline_status TEXT NOT NULL DEFAULT 'discovered',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_chart_entry_snapshot_id ON chart_entry(snapshot_id);
+CREATE INDEX idx_chart_entry_youtube_video_id ON chart_entry(youtube_video_id);
+CREATE INDEX idx_chart_entry_pipeline_status ON chart_entry(pipeline_status);
+
+CREATE TABLE youtube_video (
+    id BIGSERIAL PRIMARY KEY,
+    youtube_video_id TEXT NOT NULL UNIQUE,
+    canonical_url TEXT NOT NULL,
+    video_title TEXT,
+    channel_title TEXT,
+    description_raw TEXT,
+    published_at TIMESTAMPTZ,
+    metadata_fetched_at TIMESTAMPTZ,
+    fetch_status TEXT NOT NULL,
+    fetch_error TEXT,
+    fetcher_version TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_youtube_video_fetch_status ON youtube_video(fetch_status);
+
+CREATE TABLE review_task (
+    id BIGSERIAL PRIMARY KEY,
+    chart_entry_id BIGINT NOT NULL REFERENCES chart_entry(id) ON DELETE CASCADE,
+    youtube_video_id_ref TEXT NOT NULL REFERENCES youtube_video(youtube_video_id) ON DELETE CASCADE,
+    review_status TEXT NOT NULL DEFAULT 'pending',
+    assigned_to TEXT,
+    priority INTEGER NOT NULL DEFAULT 100,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_review_task_status ON review_task(review_status);
+CREATE INDEX idx_review_task_chart_entry_id ON review_task(chart_entry_id);
+
+CREATE TABLE review_result (
+    id BIGSERIAL PRIMARY KEY,
+    review_task_id BIGINT NOT NULL UNIQUE REFERENCES review_task(id) ON DELETE CASCADE,
+    operator_id TEXT,
+    final_artist TEXT,
+    final_song_title TEXT,
+    final_lyrics_text TEXT,
+    decision TEXT NOT NULL,
+    review_notes TEXT,
+    reviewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_review_result_decision ON review_result(decision);
+
+CREATE TABLE audit_event (
+    id BIGSERIAL PRIMARY KEY,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    event_payload_json JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    actor_type TEXT,
+    actor_id TEXT
+);
+
+CREATE INDEX idx_audit_event_entity ON audit_event(entity_type, entity_id);
+CREATE INDEX idx_audit_event_event_type ON audit_event(event_type);
+
+COMMIT;
+
+15. API contracts
+
+15.1. Fetch chart snapshot
+POST /api/chart/fetch
+
+Response:
+{
+  "snapshot_id": 123,
+  "status": "ok",
+  "entries_discovered": 20
+}
+
+15.2. Process snapshot
+POST /api/chart/{snapshot_id}/process
+
+For each entry:
+- find the YouTube URL
+- create/update chart_entry
+- trigger metadata fetch
+
+Response:
+{
+  "snapshot_id": 123,
+  "processed_entries": 20,
+  "youtube_found": 17,
+  "youtube_missing": 3
+}
+
+15.3. Fetch one YouTube metadata
+POST /api/youtube/fetch-metadata
+
+Request:
+{
+  "youtube_url": "https://www.youtube.com/watch?v=7PE611GuMAk"
+}
+
+Response:
+{
+  "youtube_video_id": "7PE611GuMAk",
+  "canonical_url": "https://www.youtube.com/watch?v=7PE611GuMAk",
+  "video_title": "Example title",
+  "channel_title": "Example channel",
+  "description_raw": "Raw description...",
+  "published_at": "2026-03-15T10:00:00Z",
+  "fetch_status": "ok"
+}
+
+15.4. List review tasks
+GET /api/review/tasks?status=pending
+
+Response:
+{
+  "items": [
+    {
+      "task_id": 1,
+      "chart_position": 4,
+      "artist_raw": "אמן",
+      "song_title_raw": "שיר",
+      "youtube_url": "https://www.youtube.com/watch?v=7PE611GuMAk",
+      "review_status": "pending",
+      "priority": 100
+    }
+  ]
+}
+
+15.5. Get review task detail
+GET /api/review/tasks/{id}
+
+Response:
+{
+  "task_id": 1,
+  "review_status": "pending",
+  "chart_entry": {
+    "chart_position": 4,
+    "artist_raw": "אמן",
+    "song_title_raw": "שיר"
+  },
+  "youtube_video": {
+    "youtube_video_id": "7PE611GuMAk",
+    "canonical_url": "https://www.youtube.com/watch?v=7PE611GuMAk",
+    "video_title": "Example title",
+    "channel_title": "Example channel",
+    "description_raw": "Raw description..."
+  }
+}
+
+15.6. Approve
+POST /api/review/tasks/{id}/approve
+
+Request:
+{
+  "operator_id": "user_1",
+  "final_artist": "אמן",
+  "final_song_title": "שיר",
+  "final_lyrics_text": "manual lyrics text",
+  "review_notes": "approved as-is"
+}
+
+15.7. Approve with edits
+POST /api/review/tasks/{id}/approve-edited
+
+Request:
+{
+  "operator_id": "user_1",
+  "final_artist": "Corrected artist",
+  "final_song_title": "Corrected title",
+  "final_lyrics_text": "edited lyrics text",
+  "review_notes": "metadata corrected manually"
+}
+
+15.8. Reject
+POST /api/review/tasks/{id}/reject
+
+Request:
+{
+  "operator_id": "user_1",
+  "review_notes": "wrong video / unusable record"
+}
+
+15.9. No useful text
+POST /api/review/tasks/{id}/mark-no-useful-text
+
+Request:
+{
+  "operator_id": "user_1",
+  "review_notes": "description contains no useful lyrics text"
+}
+
+16. OpenClaw workflow
+
+16.1. Workflow name
+mako_hitlist_youtube_raw_ingest_v1
+
+16.2. Trigger
+- manual run
+- scheduled daily run
+
+16.3. Stages
+
+Stage A - Fetch chart page
+Input:
+- source URL
+
+Action:
+- open Mako hitlist
+- wait for the list to load
+- extract all visible chart items
+
+Output:
+- array of raw items
+
+Stage B - Parse entries
+Action:
+- extract:
+  - chart_position
+  - artist_raw
+  - song_title_raw
+  - outbound links
+
+Output:
+- normalized raw chart entries
+
+Stage C - Select only YouTube
+Action:
+- keep only YouTube from outbound links
+- ignore Spotify and Apple Music
+- if no YouTube exists, set status youtube_missing
+
+Stage D - Canonicalize YouTube URL
+Action:
+- transform URL to canonical form
+- extract youtube_video_id
+
+Stage E - Fetch metadata
+Action:
+- call backend endpoint
+- store video_title, channel_title, description_raw, published_at
+
+Stage F - Create review task
+Action:
+- if metadata was fetched successfully:
+  - create review_task
+  - set status ready_for_manual_review
+
+Stage G - Audit/logging
+Action:
+- write an audit event for each transition
+
+17. Review UI spec
+
+17.1. Review queue panel
+Table:
+- Task ID
+- Chart position
+- Artist raw
+- Song title raw
+- YouTube present
+- Review status
+- Created at
+- Priority
+
+Filters:
+- pending
+- in_review
+- approved
+- approved_with_edits
+- rejected
+- no_useful_text
+
+17.2. Review item card
+The panel must show:
+
+Source block
+- chart position
+- raw artist
+- raw song title
+
+YouTube block
+- canonical URL
+- video title
+- channel title
+- published_at
+
+Raw text block
+- full description_raw
+
+Manual finalization block
+Editable fields:
+- final_artist
+- final_song_title
+- final_lyrics_text
+- review_notes
+
+Buttons:
+- Start Review
+- Approve
+- Approve With Edits
+- Reject
+- No Useful Text
+
+17.3. UX constraints
+- no fixed heights for long text areas
+- vertical scroll for raw description
+- textarea for final lyrics
+- safe confirmation for destructive actions
+- keyboard-first:
+  - Ctrl+Enter = Approve
+  - Ctrl+Shift+Enter = Approve with edits
+  - Esc = close
+- visible loading state
+- no optimistic UI; deterministic commit after save is preferred
+
+18. Business rules
+
+18.1. Deduplication
+Canonical key:
+- youtube_video_id
+
+If the same video appears in different snapshots:
+- youtube_video is not duplicated
+- new chart_entry records are created
+- a review task can either:
+  - be created for each snapshot
+  - or reuse a previously approved result
+
+For MVP, recommended behavior:
+- do not create a new review task if this youtube_video_id already has an approved or approved_with_edits result
+- still save the new chart_entry
+
+18.2. Retry policy
+Retryable:
+- timeout
+- network error
+- transient provider failure
+
+Non-retryable:
+- no YouTube URL
+- invalid YouTube URL
+- missing video ID
+- 404-like permanent metadata failure
+
+18.3. Review ownership
+When Start Review is clicked:
+- status -> in_manual_review
+- assigned_to is recorded
+- protect against parallel double editing
+
+18.4. Final decisions
+- approved
+- approved_with_edits
+- rejected
+- no_useful_text
+
+19. Logging
+
+Structured log events:
+- chart_fetch_started
+- chart_fetch_completed
+- chart_entry_discovered
+- youtube_url_found
+- youtube_url_missing
+- youtube_metadata_fetch_started
+- youtube_metadata_fetch_completed
+- youtube_metadata_fetch_failed
+- review_task_created
+- review_started
+- review_approved
+- review_approved_with_edits
+- review_rejected
+- review_no_useful_text
+
+Example payload:
+{
+  "event": "youtube_metadata_fetch_completed",
+  "chart_entry_id": 101,
+  "youtube_video_id": "7PE611GuMAk",
+  "status": "ok"
+}
+
+20. Metrics
+
+Minimal production set:
+- total snapshots
+- total chart entries
+- youtube present rate
+- youtube missing rate
+- metadata fetch success rate
+- metadata fetch failure rate
+- pending review count
+- in review count
+- approved count
+- approved with edits count
+- rejected count
+- no useful text count
+
+Additional:
+- average review time
+- average edit rate by operator
+- duplicate video rate
+
+21. Smoke-check
+
+Data flow smoke
+1. Run fetch snapshot
+2. Verify chart_snapshot was created
+3. Verify chart_entry records were created
+4. Verify some records have youtube_video_id
+5. Verify youtube_video records were created
+6. Verify review_task records were created
+
+Review smoke
+1. Open a pending task
+2. Move it to in_manual_review
+3. Save as approved
+4. Verify review_result creation
+5. Verify audit event
+6. Verify chart_entry.pipeline_status transition
+
+Dedup smoke
+1. Run a second snapshot with the same YouTube video
+2. Verify:
+   - youtube_video was not duplicated
+   - a new chart_entry was created
+   - a new review task was not created if an approved result already exists
+
+Error smoke
+1. Inject an invalid YouTube URL
+2. Verify metadata_failed status
+3. Verify correct audit/log
+4. Verify no review task was created
+
+22. Tests
+
+tests/test_mako_chart_service.py
+Verify:
+- chart row parsing
+- position parsing
+- raw artist/title extraction
+- YouTube-only extraction
+- Spotify/Apple Music ignored
+
+tests/test_youtube_metadata_service.py
+Verify:
+- YouTube URL canonicalization
+- video_id extraction
+- raw metadata fetch
+- permanent vs transient errors
+
+tests/test_review_queue_service.py
+Verify:
+- create review task
+- start review
+- approve
+- approve with edits
+- reject
+- no useful text
+- no duplicate task after approved result
+
+tests/test_pipeline_state_machine.py
+Verify:
+- allowed transitions
+- invalid transitions blocked
+- final states remain stable
+
+23. Deliverables
+
+The implementation should produce:
+- DB migration
+- domain/status definitions
+- ingestion services
+- YouTube metadata service
+- review queue service
+- review UI
+- audit/logging support
+- API endpoints
+- tests
+- workflow documentation
+- smoke-check documentation
+
+24. DoD
+
+This stage is considered complete when:
+- Mako chart ingestion works reliably
+- only the YouTube URL is selected from each chart row
+- raw YouTube metadata is stored in the database
+- a review task is created automatically
+- the operator can manually approve the final text
+- raw data and final data are stored separately
+- audit trail exists
+- deduplication by youtube_video_id exists
+- smoke-checks and basic happy path / error path tests exist
+
+25. Commit messages
+
+- feat(data): add chart snapshot, chart entry, youtube video, review task and review result schema
+- feat(ingest): implement mako hitlist raw chart ingestion with youtube-only link extraction
+- feat(youtube): add raw youtube metadata fetch and canonical video id normalization
+- feat(review): implement manual review queue and final review result write path
+- feat(audit): add audit events and structured pipeline logging for mako-youtube workflow
+- test(pipeline): add smoke and state machine coverage for raw youtube manual review flow
+- docs(workflow): document openclaw mako youtube raw ingestion and manual review lifecycle
+
+26. Ready-made task for Codex / Claude Code
+
+Task
+Implement a production-oriented semi-automatic pipeline for Mako Hitlist -> YouTube raw metadata ingestion with manual operator review.
+Important: at this stage do not implement automatic lyrics extraction or LLM cleanup. The system must only collect raw chart data and raw YouTube metadata, then route entries to manual review where the operator finalizes artist/title/lyrics text.
+
+Requirements
+1. Ingest chart entries from https://hitlist.mako.co.il/
+2. Parse per-entry:
+   - chart position
+   - raw artist
+   - raw song title
+   - outbound links
+3. Keep only the YouTube link
+4. Normalize/canonicalize the YouTube URL and extract youtube_video_id
+5. Fetch and store raw YouTube metadata:
+   - canonical URL
+   - video title
+   - channel title
+   - description_raw
+   - published_at if available
+6. Create a manual review task for entries with successful metadata fetch
+7. Provide review write-path:
+   - approve
+   - approve with edits
+   - reject
+   - no useful text
+8. Keep raw and final data separate
+9. Add audit trail and structured logs
+10. Deduplicate by youtube_video_id
+
+Non-goals
+- no lyrics extraction
+- no LLM cleanup
+- no auto-approval
+- no subtitle parsing
+
+Deliverables
+- DB migration
+- services
+- API endpoints
+- review UI
+- tests
+- docs
+- smoke checks
