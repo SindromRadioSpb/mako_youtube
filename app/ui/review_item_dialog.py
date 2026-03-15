@@ -672,16 +672,20 @@ class ReviewItemDialog(tk.Toplevel):
             self._reject_btn,
             self._no_text_btn,
         )
-        # P1: show/hide hint; P3: show/hide start button
         if review_status == "pending":
-            self._start_btn.pack(side="left", padx=4)   # ensure visible
+            # Start button visible but action buttons also enabled —
+            # they will auto-call start first if task is still pending.
+            self._start_btn.pack(side="left", padx=4)
             self._start_btn.configure(state="normal")
             self._hint_lbl.pack(side="left", padx=(0, 4))
             for b in action_btns:
-                b.configure(state="disabled")
-                _Tooltip(b, "Start Review first, then you can take action")
+                b.configure(state="normal")
+            _Tooltip(self._approve_btn,        "Approve this task (auto-starts review if needed)")
+            _Tooltip(self._approve_edited_btn, "Approve with edited fields (auto-starts review if needed)")
+            _Tooltip(self._reject_btn,         "Reject this task (auto-starts review if needed)")
+            _Tooltip(self._no_text_btn,        "Mark as no useful text (auto-starts review if needed)")
         elif review_status == "in_review":
-            # P3: hide start button, show "In Review" in its place
+            # P3: hide start button
             self._start_btn.pack_forget()
             self._hint_lbl.pack_forget()
             for b in action_btns:
@@ -719,6 +723,30 @@ class ReviewItemDialog(tk.Toplevel):
     # Action handlers
     # ------------------------------------------------------------------
 
+    def destroy(self) -> None:  # type: ignore[override]
+        """Warn if editable fields were changed but no action was submitted."""
+        if self._has_unsaved_edits():
+            if not messagebox.askyesno(
+                "Unsaved Edits",
+                "You have edited fields (artist, title, or lyrics) that haven't been\n"
+                "submitted via Approve / Approve w/ Edits.\n\n"
+                "Close anyway? Your edits will be lost.",
+                parent=self,
+            ):
+                return
+        super().destroy()
+
+    def _has_unsaved_edits(self) -> bool:
+        """Return True if any final field differs from the prefill snapshot."""
+        if not self._prefill:
+            return False
+        current_lyrics = self._lyrics_text.get("1.0", "end-1c").strip()
+        return (
+            self._final_artist_var.get() != self._prefill.get("artist", "")
+            or self._final_title_var.get() != self._prefill.get("title", "")
+            or current_lyrics != self._prefill.get("lyrics", "")
+        )
+
     def _on_start_review(self) -> None:
         op = self._ensure_operator_id()
         if not op:
@@ -736,12 +764,11 @@ class ReviewItemDialog(tk.Toplevel):
         op = self._ensure_operator_id()
         if not op:
             return
-        self._call_api_async(
-            "POST",
+        self._action_with_autostart(
             f"/api/review/tasks/{self._task_id}/approve",
             self._build_decision_body(op),
+            op=op,
             success_msg="Task approved",
-            close_on_success=True,
         )
 
     def _on_approve_edited(self) -> None:
@@ -767,12 +794,11 @@ class ReviewItemDialog(tk.Toplevel):
                 parent=self,
             ):
                 return
-        self._call_api_async(
-            "POST",
+        self._action_with_autostart(
             f"/api/review/tasks/{self._task_id}/approve-edited",
             self._build_decision_body(op),
+            op=op,
             success_msg="Task approved with edits",
-            close_on_success=True,
         )
 
     def _on_reject(self) -> None:
@@ -785,12 +811,11 @@ class ReviewItemDialog(tk.Toplevel):
         op = self._ensure_operator_id()
         if not op:
             return
-        self._call_api_async(
-            "POST",
+        self._action_with_autostart(
             f"/api/review/tasks/{self._task_id}/reject",
             self._build_decision_body(op),
+            op=op,
             success_msg="Task rejected",
-            close_on_success=True,
         )
 
     def _on_no_useful_text(self) -> None:
@@ -803,13 +828,104 @@ class ReviewItemDialog(tk.Toplevel):
         op = self._ensure_operator_id()
         if not op:
             return
-        self._call_api_async(
-            "POST",
+        self._action_with_autostart(
             f"/api/review/tasks/{self._task_id}/mark-no-useful-text",
             self._build_decision_body(op),
+            op=op,
             success_msg="Marked as no useful text",
-            close_on_success=True,
         )
+
+    def _action_with_autostart(
+        self,
+        action_path: str,
+        body: Dict[str, Any],
+        op: str,
+        success_msg: str,
+    ) -> None:
+        """
+        Execute action_path. If the task is still pending, automatically call
+        start-review first, then the action — all in a single background thread.
+        """
+        is_pending = (
+            self._full_task is not None
+            and self._full_task.get("review_status") == "pending"
+        )
+        if is_pending:
+            self._start_then_action(
+                start_body={"operator_id": op},
+                action_path=action_path,
+                action_body=body,
+                success_msg=success_msg,
+            )
+        else:
+            self._call_api_async(
+                "POST", action_path, body,
+                success_msg=success_msg,
+                close_on_success=True,
+            )
+
+    def _start_then_action(
+        self,
+        start_body: Dict[str, Any],
+        action_path: str,
+        action_body: Dict[str, Any],
+        success_msg: str,
+    ) -> None:
+        """Call start-review, then on success call action_path — sequential in one thread."""
+        self._set_loading(True)
+        self._set_status("Starting review…")
+
+        def _worker() -> None:
+            try:
+                with httpx.Client(base_url=API_BASE_URL, timeout=15.0) as client:
+                    r1 = client.post(
+                        f"/api/review/tasks/{self._task_id}/start",
+                        json=start_body,
+                    )
+                    r1.raise_for_status()
+                    r2 = client.post(action_path, json=action_body)
+                    r2.raise_for_status()
+
+                def _ok(msg=success_msg):
+                    if not self.winfo_exists():
+                        return
+                    self._set_loading(False)
+                    self._set_status(msg)
+                    # Clear prefill so close-guard doesn't fire after successful submit
+                    self._prefill = {}
+                    self.destroy()
+
+                self.after(0, _ok)
+
+            except httpx.HTTPStatusError as exc:
+                sc = exc.response.status_code
+                try:
+                    detail = exc.response.json().get("detail", exc.response.text[:200])
+                except Exception:
+                    detail = exc.response.text[:200]
+
+                def _err(s=sc, d=detail):
+                    if not self.winfo_exists():
+                        return
+                    self._set_loading(False)
+                    self._set_status(f"API error {s}")
+                    messagebox.showerror("API Error", f"HTTP {s}: {d}", parent=self)
+
+                self.after(0, _err)
+
+            except Exception as exc:
+                msg = str(exc)
+
+                def _gerr(m=msg):
+                    if not self.winfo_exists():
+                        return
+                    self._set_loading(False)
+                    self._set_status(f"Error: {m}")
+                    messagebox.showerror("Error", m, parent=self)
+
+                self.after(0, _gerr)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_open_in_word(self) -> None:
         try:
@@ -924,6 +1040,7 @@ class ReviewItemDialog(tk.Toplevel):
                     self._set_loading(False)
                     self._set_status(msg)
                     if close:
+                        self._prefill = {}  # suppress unsaved-edits guard
                         self.destroy()
                     elif reload:
                         self._load_full_detail()
