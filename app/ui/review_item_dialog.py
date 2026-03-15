@@ -74,16 +74,25 @@ def _badge_colors(status: str):
 
 
 class _Tooltip:
-    """Lightweight tooltip that appears below a widget."""
+    """Lightweight tooltip that appears below a widget after a short delay."""
+
+    _DELAY_MS = 400
 
     def __init__(self, widget: tk.Widget, text: str) -> None:
         self._widget = widget
         self._text = text
         self._win: Optional[tk.Toplevel] = None
-        widget.bind("<Enter>", self._show, add="+")
+        self._after_id: Optional[str] = None
+        widget.bind("<Enter>", self._schedule, add="+")
         widget.bind("<Leave>", self._hide, add="+")
 
-    def _show(self, _e=None) -> None:
+    def _schedule(self, _e=None) -> None:
+        if self._after_id:
+            return
+        self._after_id = self._widget.after(self._DELAY_MS, self._show)
+
+    def _show(self) -> None:
+        self._after_id = None
         if self._win:
             return
         x = self._widget.winfo_rootx() + 20
@@ -98,6 +107,9 @@ class _Tooltip:
         ).pack()
 
     def _hide(self, _e=None) -> None:
+        if self._after_id:
+            self._widget.after_cancel(self._after_id)
+            self._after_id = None
         if self._win:
             self._win.destroy()
             self._win = None
@@ -247,6 +259,27 @@ class ReviewItemDialog(tk.Toplevel):
         )
         self._mini_title_lbl.pack(side="left", fill="x", expand=True)
 
+        # ── Inline error banner (hidden by default) ────────────────────
+        self._error_banner = tk.Frame(self, bg="#fff3cd")
+        self._error_banner_var = tk.StringVar()
+        self._error_banner_lbl = tk.Label(
+            self._error_banner,
+            textvariable=self._error_banner_var,
+            bg="#fff3cd", fg="#856404",
+            font=("Segoe UI", 9),
+            anchor="w", padx=8, pady=4,
+        )
+        self._error_banner_lbl.pack(side="left", fill="x", expand=True)
+        tk.Button(
+            self._error_banner,
+            text="✕",
+            bg="#fff3cd", fg="#856404",
+            relief="flat", font=("Segoe UI", 9),
+            command=self._hide_error_banner,
+            cursor="hand2",
+        ).pack(side="right", padx=4)
+        # Not packed yet — shown by _show_error_banner()
+
         # ── Scrollable content area ────────────────────────────────────
         content_outer = ttk.Frame(self)
         content_outer.pack(side="top", fill="both", expand=True)
@@ -276,6 +309,7 @@ class ReviewItemDialog(tk.Toplevel):
         # StringVars for editable fields
         self._final_artist_var = tk.StringVar()
         self._final_title_var  = tk.StringVar()
+        self._dirty = False  # becomes True once operator edits any final field
 
         # Sections
         self._build_section_task_info(row=0)
@@ -452,9 +486,11 @@ class ReviewItemDialog(tk.Toplevel):
             ctrl_bar, textvariable=self._desc_char_var,
             foreground="#888888", font=("Segoe UI", 9),
         ).pack(side="left")
-        ttk.Button(
+        copy_btn = ttk.Button(
             ctrl_bar, text="→ Copy to Lyrics", command=self._copy_desc_to_lyrics
-        ).pack(side="right")
+        )
+        copy_btn.pack(side="right")
+        _Tooltip(copy_btn, "Copy raw description into Lyrics Text  (Ctrl+Shift+C)")
 
         # Read-only but selectable Text widget
         self._desc_text = tk.Text(
@@ -558,6 +594,36 @@ class ReviewItemDialog(tk.Toplevel):
         _add_context_menu(self._review_notes_text)
         self._route_mousewheel_to(self._review_notes_text)
 
+        # Dirty tracking: mark window title with * when operator edits final fields
+        self._final_artist_var.trace_add("write", self._on_field_edited)
+        self._final_title_var.trace_add("write",  self._on_field_edited)
+        self._lyrics_text.bind("<<Modified>>",    self._on_text_modified)
+
+    def _on_field_edited(self, *_args) -> None:
+        """Called when artist or title StringVar changes."""
+        if not self._dirty and self._prefill:
+            self._dirty = True
+            self._mark_title_dirty()
+
+    def _on_text_modified(self, _event=None) -> None:
+        """Called when the lyrics Text widget reports modification."""
+        if self._lyrics_text.edit_modified():
+            if not self._dirty and self._prefill:
+                self._dirty = True
+                self._mark_title_dirty()
+            self._lyrics_text.edit_modified(False)
+
+    def _mark_title_dirty(self) -> None:
+        current = self.title()
+        if not current.startswith("*"):
+            self.title(f"* {current}")
+
+    def _clear_dirty(self) -> None:
+        self._dirty = False
+        current = self.title()
+        if current.startswith("* "):
+            self.title(current[2:])
+
     def _build_button_bar(self, btn_frame: ttk.Frame) -> None:
         # Right side
         ttk.Button(btn_frame, text="Close (Esc)", command=self.destroy).pack(
@@ -602,7 +668,10 @@ class ReviewItemDialog(tk.Toplevel):
             btn_frame, text="✎ Approve w/ Edits", command=self._on_approve_edited
         )
         self._approve_edited_btn.pack(side="left", padx=4)
-        _Tooltip(self._approve_edited_btn, "Approve with edited final fields (Ctrl+Shift+Enter)")
+        _Tooltip(self._approve_edited_btn, "Approve with edited final fields  (Ctrl+Shift+Enter)")
+
+        # Separator between primary (approve) and danger (reject) clusters
+        ttk.Separator(btn_frame, orient="vertical").pack(side="left", fill="y", padx=6)
 
         self._reject_btn = ttk.Button(
             btn_frame, text="✗ Reject", command=self._on_reject
@@ -614,9 +683,9 @@ class ReviewItemDialog(tk.Toplevel):
         )
         self._no_text_btn.pack(side="left", padx=4)
 
-        # Tooltips on action buttons explaining they need Start Review first
-        _Tooltip(self._reject_btn,  "Reject this task")
-        _Tooltip(self._no_text_btn, "Mark as having no usable lyrics/description")
+        # Tooltips with hotkey hints
+        _Tooltip(self._reject_btn,  "Reject this task  (Ctrl+R)")
+        _Tooltip(self._no_text_btn, "Mark as having no usable lyrics/description  (Ctrl+0)")
 
     # ------------------------------------------------------------------
     # Keyboard shortcuts
@@ -625,6 +694,11 @@ class ReviewItemDialog(tk.Toplevel):
     def _bind_shortcuts(self) -> None:
         self.bind("<Control-Return>",       lambda e: self._on_approve())
         self.bind("<Control-Shift-Return>", lambda e: self._on_approve_edited())
+        self.bind("<Control-r>",            lambda e: self._on_reject())
+        self.bind("<Control-R>",            lambda e: self._on_reject())
+        self.bind("<Control-0>",            lambda e: self._on_no_useful_text())
+        self.bind("<Control-Shift-c>",      lambda e: self._copy_desc_to_lyrics())
+        self.bind("<Control-Shift-C>",      lambda e: self._copy_desc_to_lyrics())
         self.bind("<Escape>",               lambda e: self.destroy())
 
     # ------------------------------------------------------------------
@@ -712,12 +786,17 @@ class ReviewItemDialog(tk.Toplevel):
             self._review_notes_text.delete("1.0", "end")
             self._review_notes_text.insert("1.0", lr["review_notes"])
 
-        # Store prefill snapshot for approve-with-edits diff check (P2)
+        # Store prefill snapshot for approve-with-edits diff check
         self._prefill = {
             "artist": self._final_artist_var.get(),
             "title":  self._final_title_var.get(),
             "lyrics": "",
         }
+        # Reset dirty flag — prefill is not an operator edit
+        self._dirty = False
+        self._clear_dirty()
+        # Reset Text modified flag so <<Modified>> fires on actual operator edits
+        self._lyrics_text.edit_modified(False)
 
         review_status = full_task.get("review_status", "pending")
         fg, bg = _badge_colors(review_status)
@@ -994,8 +1073,8 @@ class ReviewItemDialog(tk.Toplevel):
                         return
                     self._set_loading(False)
                     self._set_status(msg)
-                    # Clear prefill so close-guard doesn't fire after successful submit
                     self._prefill = {}
+                    self._clear_dirty()
                     self.destroy()
 
                 self.after(0, _ok)
@@ -1012,7 +1091,10 @@ class ReviewItemDialog(tk.Toplevel):
                         return
                     self._set_loading(False)
                     self._set_status(f"API error {s}")
-                    messagebox.showerror("API Error", f"HTTP {s}: {d}", parent=self)
+                    if s == 404:
+                        messagebox.showerror("Not Found", f"HTTP {s}: {d}", parent=self)
+                    else:
+                        self._show_error_banner(f"HTTP {s}: {d}")
 
                 self.after(0, _err)
 
@@ -1024,7 +1106,7 @@ class ReviewItemDialog(tk.Toplevel):
                         return
                     self._set_loading(False)
                     self._set_status(f"Error: {m}")
-                    messagebox.showerror("Error", m, parent=self)
+                    self._show_error_banner(f"Connection error: {m}")
 
                 self.after(0, _gerr)
 
@@ -1067,12 +1149,17 @@ class ReviewItemDialog(tk.Toplevel):
                     final_lyrics_text=lyrics,
                     review_notes=review_notes,
                 )
-                msg = f"Exported to: {path}"
+                import os as _os
+                fname = _os.path.basename(path)
+                folder = _os.path.dirname(_os.path.abspath(path))
 
-                def _ok(m=msg):
-                    if self.winfo_exists():
-                        self._set_status(m)
-                        self._word_btn.configure(state="normal")
+                def _ok(fn=fname, fld=folder):
+                    if not self.winfo_exists():
+                        return
+                    self._set_status(f"Exported: {fn}")
+                    self._word_btn.configure(state="normal")
+                    # Show/update "Open folder" link next to the status bar
+                    self._show_export_folder_link(fld)
 
                 self.after(0, _ok)
             except RuntimeError as exc:
@@ -1143,7 +1230,8 @@ class ReviewItemDialog(tk.Toplevel):
                     self._set_loading(False)
                     self._set_status(msg)
                     if close:
-                        self._prefill = {}  # suppress unsaved-edits guard
+                        self._prefill = {}
+                        self._clear_dirty()
                         self.destroy()
                     elif reload:
                         self._load_full_detail()
@@ -1162,7 +1250,10 @@ class ReviewItemDialog(tk.Toplevel):
                         return
                     self._set_loading(False)
                     self._set_status(f"API error {s}")
-                    messagebox.showerror("API Error", f"HTTP {s}: {d}", parent=self)
+                    if s == 404:
+                        messagebox.showerror("Not Found", f"HTTP {s}: {d}", parent=self)
+                    else:
+                        self._show_error_banner(f"HTTP {s}: {d}")
 
                 self.after(0, _err)
 
@@ -1174,7 +1265,7 @@ class ReviewItemDialog(tk.Toplevel):
                         return
                     self._set_loading(False)
                     self._set_status(f"Error: {m}")
-                    messagebox.showerror("Error", m, parent=self)
+                    self._show_error_banner(f"Connection error: {m}")
 
                 self.after(0, _gerr)
 
@@ -1193,6 +1284,27 @@ class ReviewItemDialog(tk.Toplevel):
 
     def _set_status(self, msg: str) -> None:
         self._status_var.set(msg)
+
+    def _show_export_folder_link(self, folder: str) -> None:
+        """Show a clickable '📂 Open folder' label in the button bar after export."""
+        if hasattr(self, "_export_folder_btn"):
+            self._export_folder_btn.destroy()
+        import subprocess as _sp
+        self._export_folder_btn = ttk.Button(
+            self,
+            text="📂 Open folder",
+            command=lambda f=folder: _sp.Popen(f'explorer "{f}"'),
+        )
+        self._export_folder_btn.place(relx=1.0, rely=1.0, anchor="se", x=-8, y=-36)
+
+    def _show_error_banner(self, text: str) -> None:
+        """Show recoverable-error message inline (yellow banner, dismissible)."""
+        self._error_banner_var.set(f"⚠  {text}")
+        self._error_banner.pack(side="top", fill="x", after=self._mini_badge.master)
+
+    def _hide_error_banner(self) -> None:
+        self._error_banner.pack_forget()
+        self._error_banner_var.set("")
 
     def _open_youtube_url(self, _event: Any = None) -> None:
         url = self._yt_url_var.get()
