@@ -132,10 +132,15 @@ class ReviewQueuePanel(tk.Frame):
         vsb.grid(row=0, column=1, sticky="ns")
 
         self._tree.bind("<Double-1>", self._on_row_double_click)
-        self._tree.tag_configure("approved", foreground="#2e7d32")
-        self._tree.tag_configure("rejected", foreground="#c62828")
-        self._tree.tag_configure("in_review", foreground="#1565c0")
-        self._tree.tag_configure("no_useful_text", foreground="#6d4c41")
+        self._tree.bind("<Return>",   self._on_row_open)
+        self._tree.bind("<space>",    self._on_row_open)
+        self.bind_all("<F5>", lambda _e: self._on_refresh())
+        self._tree.tag_configure("pending",            foreground="#e65100")
+        self._tree.tag_configure("approved",           foreground="#2e7d32")
+        self._tree.tag_configure("approved_with_edits",foreground="#1b5e20")
+        self._tree.tag_configure("rejected",           foreground="#c62828")
+        self._tree.tag_configure("in_review",          foreground="#1565c0")
+        self._tree.tag_configure("no_useful_text",     foreground="#6d4c41")
 
         # --- Status bar ---
         self._status_bar_var = tk.StringVar(value="Ready")
@@ -207,7 +212,18 @@ class ReviewQueuePanel(tk.Frame):
                 tags=(row_tag,),
             )
 
-        self._set_status(f"{len(self._tasks)} task(s) loaded")
+        counts: Dict[str, int] = {}
+        for t in self._tasks:
+            s = t.get("review_status", "unknown")
+            counts[s] = counts.get(s, 0) + 1
+
+        parts = []
+        for key in ("pending", "in_review", "approved", "approved_with_edits",
+                    "rejected", "no_useful_text"):
+            if counts.get(key, 0):
+                parts.append(f"{counts[key]} {key.replace('_', ' ')}")
+        breakdown = " · ".join(parts) if parts else "none"
+        self._set_status(f"{len(self._tasks)} task(s) — {breakdown}")
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -219,7 +235,8 @@ class ReviewQueuePanel(tk.Frame):
     def _on_refresh(self) -> None:
         self._load_tasks(self._status_var.get())
 
-    def _on_row_double_click(self, event: Any) -> None:
+    def _on_row_open(self, event: Any = None) -> None:
+        """Open the selected row — bound to Enter, Space."""
         iid = self._tree.focus()
         if not iid:
             return
@@ -227,19 +244,18 @@ class ReviewQueuePanel(tk.Frame):
             task_id = int(iid)
         except ValueError:
             return
-
         task_data = next((t for t in self._tasks if t["id"] == task_id), None)
         if task_data is None:
             return
-
-        # Import here to avoid circular / heavy import at module level
         from app.ui.review_item_dialog import ReviewItemDialog
-
         dialog = ReviewItemDialog(self, task_data)
         dialog.grab_set()
         self.wait_window(dialog)
-        # Refresh after dialog closes in case status changed
         self._load_tasks(self._status_var.get())
+        return "break"  # prevent space from scrolling the Treeview
+
+    def _on_row_double_click(self, event: Any) -> None:
+        self._on_row_open()
 
     # ------------------------------------------------------------------
     # Helpers
