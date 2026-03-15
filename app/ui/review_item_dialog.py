@@ -197,6 +197,7 @@ class ReviewItemDialog(tk.Toplevel):
         parent: tk.Widget,
         task_data: Dict[str, Any],
         task_list: Optional[list] = None,
+        auto_next: bool = True,
     ) -> None:
         super().__init__(parent)
         self._task_id: int = task_data["id"]
@@ -205,7 +206,10 @@ class ReviewItemDialog(tk.Toplevel):
         self._loading = False
         self._prefill: Dict[str, str] = {}  # stored at populate time for diff check
         self._task_list: list = task_list or []
-        self._next_task: Optional[Dict[str, Any]] = self._find_next_actionable()
+        self._auto_next: bool = auto_next
+        self._next_task: Optional[Dict[str, Any]] = (
+            self._find_next_actionable() if auto_next else None
+        )
         # Public: panel reads this after wait_window to decide whether to open next task
         self.next_task_data: Optional[Dict[str, Any]] = None
 

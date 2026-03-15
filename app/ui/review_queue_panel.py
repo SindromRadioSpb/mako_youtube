@@ -55,6 +55,38 @@ COLUMN_LABELS = {
 
 
 # ---------------------------------------------------------------------------
+# Tooltip helper (panel-local, no delay needed for toolbar buttons)
+# ---------------------------------------------------------------------------
+
+
+def _attach_tooltip(widget: tk.Widget, text: str) -> None:
+    """Attach a simple hover tooltip to a toolbar widget."""
+    _win: list = [None]
+
+    def _show(_e=None) -> None:
+        if _win[0]:
+            return
+        x = widget.winfo_rootx() + 20
+        y = widget.winfo_rooty() + widget.winfo_height() + 4
+        _win[0] = tw = tk.Toplevel(widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            tw, text=text,
+            background="#ffffe0", relief="solid", borderwidth=1,
+            font=("Segoe UI", 9), padx=6, pady=3, justify="left",
+        ).pack()
+
+    def _hide(_e=None) -> None:
+        if _win[0]:
+            _win[0].destroy()
+            _win[0] = None
+
+    widget.bind("<Enter>", _show, add="+")
+    widget.bind("<Leave>", _hide, add="+")
+
+
+# ---------------------------------------------------------------------------
 # Panel
 # ---------------------------------------------------------------------------
 
@@ -101,6 +133,28 @@ class ReviewQueuePanel(tk.Frame):
             toolbar, text="Refresh", command=self._on_refresh
         )
         self._refresh_btn.pack(side="left", padx=(8, 0))
+        _attach_tooltip(
+            self._refresh_btn,
+            "Reload task list from the server (F5)\n"
+            "Applies the current status filter.",
+        )
+
+        # Auto-next checkbox — master switch for PATCH-07 Next Task flow
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=(12, 0))
+        self._auto_next_var = tk.BooleanVar(value=True)
+        auto_next_cb = ttk.Checkbutton(
+            toolbar,
+            text="Auto-next",
+            variable=self._auto_next_var,
+        )
+        auto_next_cb.pack(side="left", padx=(8, 0))
+        _attach_tooltip(
+            auto_next_cb,
+            "Auto-next: when enabled, after approving / rejecting a task\n"
+            "the next pending or in-review task opens automatically.\n"
+            "Also shows the \"Next →\" button inside each task dialog.\n\n"
+            "Uncheck to process tasks one at a time.",
+        )
 
         # --- Treeview ---
         tree_frame = ttk.Frame(self)
@@ -253,7 +307,12 @@ class ReviewQueuePanel(tk.Frame):
     def _open_task_data(self, task_data: Dict[str, Any]) -> None:
         """Open a ReviewItemDialog for task_data, then advance if requested."""
         from app.ui.review_item_dialog import ReviewItemDialog
-        dialog = ReviewItemDialog(self, task_data, task_list=self._tasks)
+        auto_next = self._auto_next_var.get()
+        dialog = ReviewItemDialog(
+            self, task_data,
+            task_list=self._tasks if auto_next else None,
+            auto_next=auto_next,
+        )
         dialog.grab_set()
         self.wait_window(dialog)
         next_task = dialog.next_task_data
