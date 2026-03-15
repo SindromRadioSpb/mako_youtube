@@ -2,7 +2,8 @@
 Tkinter Review Queue Panel for the OpenClaw Mako YouTube pipeline.
 
 Displays a filterable Treeview of ReviewTask rows fetched from the REST API.
-Double-clicking a row opens a ReviewItemDialog for detailed review.
+Double-clicking (or Enter/Space) on a row opens a ReviewItemDialog.
+Supports multi-select and bulk actions via the bulk toolbar.
 """
 from __future__ import annotations
 
@@ -110,9 +111,9 @@ class ReviewQueuePanel(tk.Frame):
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.rowconfigure(2, weight=1)   # row 2 = treeview (bulk bar is row 1)
 
-        # --- Toolbar ---
+        # ── Row 0: Main toolbar ────────────────────────────────────────
         toolbar = ttk.Frame(self)
         toolbar.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 2))
 
@@ -139,7 +140,6 @@ class ReviewQueuePanel(tk.Frame):
             "Applies the current status filter.",
         )
 
-        # Auto-next checkbox — master switch for PATCH-07 Next Task flow
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=(12, 0))
         self._auto_next_var = tk.BooleanVar(value=True)
         auto_next_cb = ttk.Checkbutton(
@@ -156,9 +156,15 @@ class ReviewQueuePanel(tk.Frame):
             "Uncheck to process tasks one at a time.",
         )
 
-        # --- Treeview ---
+        # ── Row 1: Bulk toolbar (contextual) ──────────────────────────
+        bulk_bar = tk.Frame(self, bg="#eceff1", height=36)
+        bulk_bar.grid(row=1, column=0, sticky="ew", padx=0, pady=0)
+        bulk_bar.pack_propagate(False)  # fixed height
+        self._build_bulk_bar(bulk_bar)
+
+        # ── Row 2: Treeview ────────────────────────────────────────────
         tree_frame = ttk.Frame(self)
-        tree_frame.grid(row=1, column=0, sticky="nsew", padx=6, pady=2)
+        tree_frame.grid(row=2, column=0, sticky="nsew", padx=6, pady=2)
         tree_frame.columnconfigure(0, weight=1)
         tree_frame.rowconfigure(0, weight=1)
 
@@ -166,37 +172,42 @@ class ReviewQueuePanel(tk.Frame):
             tree_frame,
             columns=COLUMNS,
             show="headings",
-            selectmode="browse",
+            selectmode="extended",   # PATCH-BULK-01: multi-select
         )
         for col in COLUMNS:
             self._tree.heading(col, text=COLUMN_LABELS[col])
-        self._tree.column("task_id", width=60, anchor="e")
-        self._tree.column("chart_position", width=65, anchor="center")
-        self._tree.column("artist_raw", width=160)
+        self._tree.column("task_id",        width=60,  anchor="e")
+        self._tree.column("chart_position", width=65,  anchor="center")
+        self._tree.column("artist_raw",     width=160)
         self._tree.column("song_title_raw", width=200)
-        self._tree.column("youtube_present", width=40, anchor="center")
-        self._tree.column("review_status", width=130)
-        self._tree.column("created_at", width=165)
-        self._tree.column("priority", width=60, anchor="e")
+        self._tree.column("youtube_present",width=40,  anchor="center")
+        self._tree.column("review_status",  width=130)
+        self._tree.column("created_at",     width=165)
+        self._tree.column("priority",       width=60,  anchor="e")
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self._tree.yview)
         self._tree.configure(yscrollcommand=vsb.set)
-
         self._tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
 
-        self._tree.bind("<Double-1>", self._on_row_double_click)
-        self._tree.bind("<Return>",   self._on_row_open)
-        self._tree.bind("<space>",    self._on_row_open)
+        # Bindings
+        self._tree.bind("<Double-1>",           self._on_row_double_click)
+        self._tree.bind("<Return>",             self._on_row_open)
+        self._tree.bind("<space>",              self._on_row_open)
+        self._tree.bind("<<TreeviewSelect>>",   self._on_selection_changed)
+        self._tree.bind("<Control-a>",          self._on_select_all)
+        self._tree.bind("<Control-A>",          self._on_select_all)
         self.bind_all("<F5>", lambda _e: self._on_refresh())
-        self._tree.tag_configure("pending",            foreground="#e65100")
-        self._tree.tag_configure("approved",           foreground="#2e7d32")
-        self._tree.tag_configure("approved_with_edits",foreground="#1b5e20")
-        self._tree.tag_configure("rejected",           foreground="#c62828")
-        self._tree.tag_configure("in_review",          foreground="#1565c0")
-        self._tree.tag_configure("no_useful_text",     foreground="#6d4c41")
 
-        # --- Status bar ---
+        # Row colour tags
+        self._tree.tag_configure("pending",             foreground="#e65100")
+        self._tree.tag_configure("approved",            foreground="#2e7d32")
+        self._tree.tag_configure("approved_with_edits", foreground="#1b5e20")
+        self._tree.tag_configure("rejected",            foreground="#c62828")
+        self._tree.tag_configure("in_review",           foreground="#1565c0")
+        self._tree.tag_configure("no_useful_text",      foreground="#6d4c41")
+
+        # ── Row 3: Status bar ──────────────────────────────────────────
         self._status_bar_var = tk.StringVar(value="Ready")
         status_bar = ttk.Label(
             self,
@@ -205,7 +216,118 @@ class ReviewQueuePanel(tk.Frame):
             anchor="w",
             padding=(4, 2),
         )
-        status_bar.grid(row=2, column=0, sticky="ew")
+        status_bar.grid(row=3, column=0, sticky="ew")
+
+    # ------------------------------------------------------------------
+    # Bulk toolbar construction
+    # ------------------------------------------------------------------
+
+    def _build_bulk_bar(self, bar: tk.Frame) -> None:
+        """
+        Build the contextual bulk action toolbar.
+
+        Inactive hint shown when <2 items selected.
+        Action buttons enabled when 2+ items selected.
+        All-filtered button always enabled.
+        """
+        inner = tk.Frame(bar, bg="#eceff1")
+        inner.pack(side="left", fill="y", padx=8)
+
+        # Selection count label
+        self._sel_lbl_var = tk.StringVar(value="Select tasks for bulk actions  (Ctrl+A = all)")
+        self._sel_lbl = tk.Label(
+            inner,
+            textvariable=self._sel_lbl_var,
+            bg="#eceff1", fg="#78909c",
+            font=("Segoe UI", 9),
+        )
+        self._sel_lbl.pack(side="left", padx=(0, 10))
+
+        # Separator
+        tk.Frame(bar, bg="#b0bec5", width=1).pack(side="left", fill="y", padx=4, pady=4)
+
+        # Bulk action buttons (operate on SELECTED tasks)
+        self._bulk_btns: List[ttk.Button] = []
+
+        def _make_bulk_btn(text: str, action: str, tooltip: str) -> ttk.Button:
+            btn = ttk.Button(
+                bar,
+                text=text,
+                state="disabled",
+                command=lambda a=action: self._on_bulk_action_selected(a),
+            )
+            btn.pack(side="left", padx=3, pady=4)
+            _attach_tooltip(btn, tooltip)
+            self._bulk_btns.append(btn)
+            return btn
+
+        _make_bulk_btn(
+            "↺ Reopen",
+            "reopen",
+            "Reopen every selected terminal task → returns to in_review.\n"
+            "Pending/in_review tasks are skipped.",
+        )
+        _make_bulk_btn(
+            "✓ Approve",
+            "approve",
+            "Approve all selected tasks using raw chart data.\n"
+            "Pending tasks are started automatically.",
+        )
+        _make_bulk_btn(
+            "✎ Approve w/ Edits",
+            "approve_with_edits",
+            "Approve-with-edits all selected tasks using raw chart data.\n"
+            "Pending tasks are started automatically.",
+        )
+        _make_bulk_btn(
+            "★ Fill+Approve",
+            "fill_approve",
+            "Macro: for each selected task —\n"
+            "  1. Reopen if terminal (optional)\n"
+            "  2. Fetch raw YouTube description\n"
+            "  3. Use description as Lyrics Text\n"
+            "  4. Submit Approve with edits\n\n"
+            "Safety options shown before run.",
+        )
+
+        # Right side: separator + All-filtered button
+        tk.Frame(bar, bg="#b0bec5", width=1).pack(side="right", fill="y", padx=4, pady=4)
+
+        self._all_filtered_var = tk.StringVar(value="All filtered (0) →")
+        self._all_filtered_btn = tk.Menubutton(
+            bar,
+            textvariable=self._all_filtered_var,
+            bg="#eceff1", fg="#37474f",
+            font=("Segoe UI", 9),
+            relief="groove",
+            cursor="hand2",
+        )
+        self._all_filtered_btn.pack(side="right", padx=6, pady=4)
+        _attach_tooltip(
+            self._all_filtered_btn,
+            "Apply a bulk action to ALL currently filtered tasks\n"
+            "(regardless of what is selected in the list).",
+        )
+        # Build dropdown menu for all-filtered
+        self._filtered_menu = tk.Menu(self._all_filtered_btn, tearoff=0)
+        self._filtered_menu.add_command(
+            label="↺ Reopen",
+            command=lambda: self._on_bulk_action_filtered("reopen"),
+        )
+        self._filtered_menu.add_command(
+            label="✓ Approve",
+            command=lambda: self._on_bulk_action_filtered("approve"),
+        )
+        self._filtered_menu.add_command(
+            label="✎ Approve w/ Edits",
+            command=lambda: self._on_bulk_action_filtered("approve_with_edits"),
+        )
+        self._filtered_menu.add_separator()
+        self._filtered_menu.add_command(
+            label="★ Fill+Approve  (macro)",
+            command=lambda: self._on_bulk_action_filtered("fill_approve"),
+        )
+        self._all_filtered_btn.configure(menu=self._filtered_menu)
 
     # ------------------------------------------------------------------
     # Data loading
@@ -279,8 +401,136 @@ class ReviewQueuePanel(tk.Frame):
         breakdown = " · ".join(parts) if parts else "none"
         self._set_status(f"{len(self._tasks)} task(s) — {breakdown}")
 
+        # Update "All filtered" button label
+        self._all_filtered_var.set(f"All filtered ({len(self._tasks)}) →")
+
+        # Reset selection state
+        self._on_selection_changed()
+
     # ------------------------------------------------------------------
-    # Event handlers
+    # Selection helpers
+    # ------------------------------------------------------------------
+
+    def _on_selection_changed(self, _event: Any = None) -> None:
+        """Update bulk bar state when Treeview selection changes."""
+        selected_iids = self._tree.selection()
+        n = len(selected_iids)
+
+        if n >= 2:
+            self._sel_lbl_var.set(f"{n} selected")
+            self._sel_lbl.configure(fg="#263238", font=("Segoe UI", 9, "bold"))
+            for btn in self._bulk_btns:
+                btn.configure(state="normal")
+        elif n == 1:
+            self._sel_lbl_var.set("1 selected  (select 2+ for bulk actions)")
+            self._sel_lbl.configure(fg="#78909c", font=("Segoe UI", 9))
+            for btn in self._bulk_btns:
+                btn.configure(state="disabled")
+        else:
+            self._sel_lbl_var.set("Select tasks for bulk actions  (Ctrl+A = all)")
+            self._sel_lbl.configure(fg="#78909c", font=("Segoe UI", 9))
+            for btn in self._bulk_btns:
+                btn.configure(state="disabled")
+
+    def _on_select_all(self, _event: Any = None) -> None:
+        """Ctrl+A — select all visible rows."""
+        self._tree.selection_set(self._tree.get_children())
+        return "break"
+
+    def _get_selected_tasks(self) -> List[Dict[str, Any]]:
+        selected_ids = {int(iid) for iid in self._tree.selection()}
+        return [t for t in self._tasks if t["id"] in selected_ids]
+
+    def _get_operator_id(self) -> Optional[str]:
+        """Return the current session operator ID, prompting if not set."""
+        from app.ui.review_item_dialog import (
+            _get_session_operator,
+            _set_session_operator,
+        )
+        from app.ui.review_item_dialog import _SimpleInputDialog
+
+        op = _get_session_operator()
+        if op:
+            return op
+        dialog = _SimpleInputDialog(self, "Operator ID", "Enter your operator ID for bulk action:")
+        self.wait_window(dialog)
+        if dialog.result:
+            _set_session_operator(dialog.result)
+            return dialog.result
+        return None
+
+    # ------------------------------------------------------------------
+    # Bulk action triggers
+    # ------------------------------------------------------------------
+
+    def _on_bulk_action_selected(self, action: str) -> None:
+        """Run bulk action on selected tasks."""
+        tasks = self._get_selected_tasks()
+        if not tasks:
+            messagebox.showinfo("No selection", "Select at least 2 tasks first.", parent=self)
+            return
+        self._run_bulk(action, tasks)
+
+    def _on_bulk_action_filtered(self, action: str) -> None:
+        """Run bulk action on all currently filtered tasks."""
+        tasks = list(self._tasks)
+        if not tasks:
+            messagebox.showinfo("No tasks", "No tasks in the current filtered view.", parent=self)
+            return
+        self._run_bulk(action, tasks)
+
+    def _run_bulk(self, action: str, tasks: List[Dict[str, Any]]) -> None:
+        """Show options dialog, then run the bulk worker with a progress dialog."""
+        operator_id = self._get_operator_id()
+        if not operator_id:
+            return
+
+        from app.ui.bulk_dialogs import (
+            BulkOptionsDialog,
+            BulkProgressDialog,
+            BulkSummaryDialog,
+        )
+        from app.ui.bulk_worker import BulkWorker
+
+        # 1 — Options dialog
+        opts_dlg = BulkOptionsDialog(self, action=action, tasks=tasks)
+        self.wait_window(opts_dlg)
+        if opts_dlg.result is None:
+            return  # cancelled
+        options = opts_dlg.result
+
+        # 2 — Progress dialog + worker
+        worker = BulkWorker(tasks, options, operator_id)
+        progress_dlg = BulkProgressDialog(self, total=len(tasks), cancel_callback=worker.cancel)
+        progress_dlg.grab_set()
+
+        def _on_progress(current: int, total: int, result) -> None:
+            if progress_dlg.winfo_exists():
+                progress_dlg.after(
+                    0,
+                    lambda c=current, t=total, r=result: progress_dlg.update_progress(c, t, r),
+                )
+
+        worker.set_progress_callback(_on_progress)
+
+        def _worker_thread() -> None:
+            summary = worker.run()
+            if progress_dlg.winfo_exists():
+                progress_dlg.after(0, lambda s=summary: _on_complete(s))
+
+        def _on_complete(summary) -> None:
+            if progress_dlg.winfo_exists():
+                progress_dlg.destroy()
+            # Refresh queue
+            self._load_tasks(self._status_var.get())
+            # Summary dialog
+            sum_dlg = BulkSummaryDialog(self, summary)
+            sum_dlg.grab_set()
+
+        threading.Thread(target=_worker_thread, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Event handlers (single-item)
     # ------------------------------------------------------------------
 
     def _on_filter_changed(self, _event: Any = None) -> None:
@@ -290,7 +540,7 @@ class ReviewQueuePanel(tk.Frame):
         self._load_tasks(self._status_var.get())
 
     def _on_row_open(self, event: Any = None) -> None:
-        """Open the selected row — bound to Enter, Space."""
+        """Open the focused row — bound to Enter, Space."""
         iid = self._tree.focus()
         if not iid:
             return
@@ -302,7 +552,7 @@ class ReviewQueuePanel(tk.Frame):
         if task_data is None:
             return
         self._open_task_data(task_data)
-        return "break"  # prevent space from scrolling the Treeview
+        return "break"
 
     def _open_task_data(self, task_data: Dict[str, Any]) -> None:
         """Open a ReviewItemDialog for task_data, then advance if requested."""
@@ -318,7 +568,6 @@ class ReviewQueuePanel(tk.Frame):
         next_task = dialog.next_task_data
         self._load_tasks(self._status_var.get())
         if next_task:
-            # Open next task immediately (before queue refresh completes)
             self.after(0, lambda t=next_task: self._open_task_data(t))
 
     def _on_row_double_click(self, event: Any) -> None:
