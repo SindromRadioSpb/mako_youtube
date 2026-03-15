@@ -247,12 +247,20 @@ class ReviewQueuePanel(tk.Frame):
         task_data = next((t for t in self._tasks if t["id"] == task_id), None)
         if task_data is None:
             return
+        self._open_task_data(task_data)
+        return "break"  # prevent space from scrolling the Treeview
+
+    def _open_task_data(self, task_data: Dict[str, Any]) -> None:
+        """Open a ReviewItemDialog for task_data, then advance if requested."""
         from app.ui.review_item_dialog import ReviewItemDialog
-        dialog = ReviewItemDialog(self, task_data)
+        dialog = ReviewItemDialog(self, task_data, task_list=self._tasks)
         dialog.grab_set()
         self.wait_window(dialog)
+        next_task = dialog.next_task_data
         self._load_tasks(self._status_var.get())
-        return "break"  # prevent space from scrolling the Treeview
+        if next_task:
+            # Open next task immediately (before queue refresh completes)
+            self.after(0, lambda t=next_task: self._open_task_data(t))
 
     def _on_row_double_click(self, event: Any) -> None:
         self._on_row_open()

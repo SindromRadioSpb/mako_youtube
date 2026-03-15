@@ -192,13 +192,22 @@ class ReviewItemDialog(tk.Toplevel):
         task_data: Dict matching ReviewTaskSummary shape from the API.
     """
 
-    def __init__(self, parent: tk.Widget, task_data: Dict[str, Any]) -> None:
+    def __init__(
+        self,
+        parent: tk.Widget,
+        task_data: Dict[str, Any],
+        task_list: Optional[list] = None,
+    ) -> None:
         super().__init__(parent)
         self._task_id: int = task_data["id"]
         self._task_data = task_data
         self._full_task: Optional[Dict[str, Any]] = None
         self._loading = False
         self._prefill: Dict[str, str] = {}  # stored at populate time for diff check
+        self._task_list: list = task_list or []
+        self._next_task: Optional[Dict[str, Any]] = self._find_next_actionable()
+        # Public: panel reads this after wait_window to decide whether to open next task
+        self.next_task_data: Optional[Dict[str, Any]] = None
 
         self.title(f"Review Task #{self._task_id}")
         self.geometry("940x780")
@@ -629,6 +638,20 @@ class ReviewItemDialog(tk.Toplevel):
         ttk.Button(btn_frame, text="Close (Esc)", command=self.destroy).pack(
             side="right", padx=4
         )
+
+        # Next Task button — only shown when a next actionable task exists
+        if self._next_task:
+            ttk.Separator(btn_frame, orient="vertical").pack(side="right", fill="y", padx=4)
+            self._next_btn = ttk.Button(
+                btn_frame, text="Next →", command=self._on_next_task
+            )
+            self._next_btn.pack(side="right", padx=4)
+            _Tooltip(
+                self._next_btn,
+                f"Go to next task: #{self._next_task['id']} — "
+                f"{self._next_task.get('artist_raw', '')}  (Alt+→)",
+            )
+
         ttk.Separator(btn_frame, orient="vertical").pack(side="right", fill="y", padx=4)
         self._word_btn = ttk.Button(
             btn_frame, text="Open in Word", command=self._on_open_in_word
@@ -700,6 +723,39 @@ class ReviewItemDialog(tk.Toplevel):
         self.bind("<Control-Shift-c>",      lambda e: self._copy_desc_to_lyrics())
         self.bind("<Control-Shift-C>",      lambda e: self._copy_desc_to_lyrics())
         self.bind("<Escape>",               lambda e: self.destroy())
+        self.bind("<Alt-Right>",            lambda e: self._on_next_task())
+
+    # ------------------------------------------------------------------
+    # Next task helpers
+    # ------------------------------------------------------------------
+
+    def _find_next_actionable(self) -> Optional[Dict[str, Any]]:
+        """Return the next pending/in_review task after the current one in task_list."""
+        idx = next(
+            (i for i, t in enumerate(self._task_list) if t["id"] == self._task_id), -1
+        )
+        if idx < 0:
+            return None
+        for t in self._task_list[idx + 1:]:
+            if t.get("review_status") in ("pending", "in_review"):
+                return t
+        return None
+
+    def _on_next_task(self) -> None:
+        """Navigate to next actionable task (skip current without submitting)."""
+        if self._next_task is None:
+            return
+        if self._has_unsaved_edits():
+            if not messagebox.askyesno(
+                "Unsaved Edits",
+                "Navigate to the next task? Your unsaved edits will be lost.",
+                parent=self,
+            ):
+                return
+        self.next_task_data = self._next_task
+        self._prefill = {}
+        self._clear_dirty()
+        super().destroy()
 
     # ------------------------------------------------------------------
     # Data loading
@@ -1075,6 +1131,7 @@ class ReviewItemDialog(tk.Toplevel):
                     self._set_status(msg)
                     self._prefill = {}
                     self._clear_dirty()
+                    self.next_task_data = self._next_task  # signal panel to open next
                     self.destroy()
 
                 self.after(0, _ok)
@@ -1232,6 +1289,7 @@ class ReviewItemDialog(tk.Toplevel):
                     if close:
                         self._prefill = {}
                         self._clear_dirty()
+                        self.next_task_data = self._next_task  # signal panel to open next
                         self.destroy()
                     elif reload:
                         self._load_full_detail()
