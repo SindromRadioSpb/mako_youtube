@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 
 from app.domain.dto import (
     ChartEntryDTO,
+    ExportItemDTO,
+    ExportItemsResponse,
     ReviewDecisionRequest,
     ReviewResultDTO,
     ReviewTaskDTO,
@@ -350,3 +352,50 @@ async def mark_no_useful_text(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     return ReviewResultDTO.model_validate(result)
+
+
+@router.get(
+    "/export-items",
+    response_model=ExportItemsResponse,
+    summary="Get all tasks with final review fields for unified export",
+)
+async def get_export_items(
+    session: AsyncSession = Depends(get_session),
+) -> ExportItemsResponse:
+    """
+    Returns all tasks joined with their ReviewResult and ChartEntry data.
+    Includes final_artist, final_song_title, final_lyrics_text for export use.
+    Client applies export policy (status filter, skip empty lyrics, etc.).
+    """
+    tasks_result = await session.execute(
+        select(ReviewTask).order_by(ReviewTask.id)
+    )
+    tasks = tasks_result.scalars().all()
+
+    items = []
+    for task in tasks:
+        # ChartEntry
+        ce_q = await session.execute(
+            select(ChartEntry).where(ChartEntry.id == task.chart_entry_id)
+        )
+        ce = ce_q.scalar_one_or_none()
+
+        # Latest ReviewResult
+        rr_q = await session.execute(
+            select(ReviewResult)
+            .where(ReviewResult.review_task_id == task.id)
+            .order_by(ReviewResult.reviewed_at.desc())
+            .limit(1)
+        )
+        rr = rr_q.scalar_one_or_none()
+
+        items.append(ExportItemDTO(
+            task_id=task.id,
+            chart_position=ce.chart_position if ce else None,
+            review_status=task.review_status,
+            final_artist=(rr.final_artist if rr else None) or (ce.artist_raw if ce else None),
+            final_song_title=(rr.final_song_title if rr else None) or (ce.song_title_raw if ce else None),
+            final_lyrics_text=rr.final_lyrics_text if rr else None,
+        ))
+
+    return ExportItemsResponse(items=items, total=len(items))

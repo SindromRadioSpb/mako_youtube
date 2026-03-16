@@ -195,3 +195,20 @@ class ReviewTaskDetailResponse(BaseModel):
     youtube_video: Optional[YouTubeVideoDTO] = None
     latest_result: Optional[ReviewResultDTO] = None  # populated when task has been reviewed
 
+
+class ExportItemDTO(BaseModel):
+    """Lightweight DTO for unified Word export."""
+    model_config = ConfigDict(from_attributes=True)
+
+    task_id: int
+    chart_position: Optional[int] = None
+    review_status: str
+    final_artist: Optional[str] = None
+    final_song_title: Optional[str] = None
+    final_lyrics_text: Optional[str] = None
+
+
+class ExportItemsResponse(BaseModel):
+    items: List["ExportItemDTO"]
+    total: int = 0
+

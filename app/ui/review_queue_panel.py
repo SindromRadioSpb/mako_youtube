@@ -170,6 +170,34 @@ class ReviewQueuePanel(tk.Frame):
             "Uncheck to process tasks one at a time.",
         )
 
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=(12, 0))
+
+        self._export_btn = tk.Menubutton(
+            toolbar,
+            text="⬇ Export DOCX",
+            relief="groove",
+            cursor="hand2",
+            font=("Segoe UI", 9),
+        )
+        self._export_btn.pack(side="left", padx=(8, 0))
+        _attach_tooltip(
+            self._export_btn,
+            "Export songs to a single Word (.docx) document.\n"
+            "Only approved / approved_with_edits by default.\n\n"
+            "• Export selected — uses currently selected rows\n"
+            "• Export all filtered — uses current filter view",
+        )
+        export_menu = tk.Menu(self._export_btn, tearoff=0)
+        export_menu.add_command(
+            label="Export selected to DOCX",
+            command=lambda: self._on_export_docx(selected_only=True),
+        )
+        export_menu.add_command(
+            label="Export all filtered to DOCX",
+            command=lambda: self._on_export_docx(selected_only=False),
+        )
+        self._export_btn.configure(menu=export_menu)
+
         # ── Row 1: Bulk toolbar (contextual) ──────────────────────────
         bulk_bar = tk.Frame(self, bg="#eceff1", height=36)
         bulk_bar.grid(row=1, column=0, sticky="ew", padx=0, pady=0)
@@ -664,6 +692,98 @@ class ReviewQueuePanel(tk.Frame):
         self._refresh_btn.configure(state="normal")
         self._set_status(f"Error: {msg}")
         messagebox.showerror("Fetch Chart Failed", msg, parent=self)
+
+    def _on_export_docx(self, selected_only: bool) -> None:
+        """Collect tasks, show export options dialog, run export."""
+        from app.services.unified_word_export_service import (
+            ExportItem, export_collection,
+        )
+        from app.ui.export_dialogs import ExportOptionsDialog, ExportSummaryDialog
+
+        # Determine source tasks
+        if selected_only:
+            source = self._get_selected_tasks()
+            if not source:
+                messagebox.showinfo(
+                    "No selection",
+                    "Select at least one task first, or use 'Export all filtered'.",
+                    parent=self,
+                )
+                return
+        else:
+            source = list(self._tasks)
+            if not source:
+                messagebox.showinfo(
+                    "No tasks",
+                    "No tasks in the current filtered view.",
+                    parent=self,
+                )
+                return
+
+        # Fetch final fields from API for each task
+        self._set_status("Fetching export data…")
+        self._export_btn.configure(state="disabled")
+
+        def _worker() -> None:
+            try:
+                with httpx.Client(base_url=API_BASE_URL, timeout=30.0) as client:
+                    resp = client.get("/api/review/export-items")
+                    resp.raise_for_status()
+                    data = resp.json()
+
+                all_items_map = {i["task_id"]: i for i in data.get("items", [])}
+
+                items = []
+                for task in source:
+                    tid = task["id"]
+                    raw = all_items_map.get(tid) or {}
+                    items.append(ExportItem(
+                        task_id=tid,
+                        chart_position=raw.get("chart_position") or task.get("chart_position"),
+                        final_artist=raw.get("final_artist") or task.get("artist_raw") or "",
+                        final_song_title=raw.get("final_song_title") or task.get("song_title_raw") or "",
+                        final_lyrics_text=raw.get("final_lyrics_text") or "",
+                        review_status=raw.get("review_status") or task.get("review_status") or "",
+                    ))
+
+                self.after(0, lambda i=items: _show_dialog(i))
+
+            except Exception as exc:
+                msg = str(exc)
+                self.after(0, lambda m=msg: _on_error(m))
+
+        def _show_dialog(items) -> None:
+            if not self.winfo_exists():
+                return
+            self._export_btn.configure(state="normal")
+            self._set_status("Ready")
+
+            opts_dlg = ExportOptionsDialog(self, items)
+            self.wait_window(opts_dlg)
+            if opts_dlg.result is None:
+                return
+
+            try:
+                label = "selected" if selected_only else "all_filtered"
+                summary = export_collection(items, opts_dlg.result, label=label)
+            except ValueError as exc:
+                messagebox.showinfo("Nothing to export", str(exc), parent=self)
+                return
+            except RuntimeError as exc:
+                messagebox.showerror("Export failed", str(exc), parent=self)
+                return
+
+            sum_dlg = ExportSummaryDialog(self, summary)
+            self.wait_window(sum_dlg)
+
+        def _on_error(msg: str) -> None:
+            if not self.winfo_exists():
+                return
+            self._export_btn.configure(state="normal")
+            self._set_status("Ready")
+            messagebox.showerror("Export data fetch failed", msg, parent=self)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_row_open(self, event: Any = None) -> None:
         """Open the focused row — bound to Enter, Space."""
