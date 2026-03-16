@@ -120,6 +120,76 @@ def _section_heading(item: ExportItem) -> str:
     return f"Position {pos}. {artist} - {title}"
 
 
+def _add_bookmark(paragraph: Any, bookmark_id: int, bookmark_name: str) -> None:
+    """Wrap paragraph content with a Word bookmark."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    bm_start = OxmlElement('w:bookmarkStart')
+    bm_start.set(qn('w:id'), str(bookmark_id))
+    bm_start.set(qn('w:name'), bookmark_name)
+    bm_end = OxmlElement('w:bookmarkEnd')
+    bm_end.set(qn('w:id'), str(bookmark_id))
+
+    p_elem = paragraph._p
+    p_elem.insert(0, bm_start)  # before runs
+    p_elem.append(bm_end)
+
+
+def _add_toc_hyperlink(paragraph: Any, text: str, anchor: str) -> None:
+    """Add a clickable hyperlink in TOC that jumps to anchor bookmark."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    # Remove existing runs from paragraph
+    p_elem = paragraph._p
+    for r in p_elem.findall(qn('w:r')):
+        p_elem.remove(r)
+
+    # Create hyperlink element
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('w:anchor'), anchor)
+
+    # Create run inside hyperlink
+    run_elem = OxmlElement('w:r')
+
+    # Apply hyperlink character style
+    rPr = OxmlElement('w:rPr')
+    rStyle = OxmlElement('w:rStyle')
+    rStyle.set(qn('w:val'), 'Hyperlink')
+    rPr.append(rStyle)
+    run_elem.append(rPr)
+
+    # Add text
+    t_elem = OxmlElement('w:t')
+    t_elem.text = text
+    t_elem.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+    run_elem.append(t_elem)
+    hyperlink.append(run_elem)
+    p_elem.append(hyperlink)
+
+
+def _set_rtl(paragraph: Any) -> None:
+    """Set paragraph and run direction to RTL for Hebrew content."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    pPr = paragraph._p.get_or_add_pPr()
+    bidi = OxmlElement('w:bidi')
+    pPr.append(bidi)
+    # Also set jc to right
+    jc = pPr.find(qn('w:jc'))
+    if jc is None:
+        jc = OxmlElement('w:jc')
+        pPr.append(jc)
+    jc.set(qn('w:val'), 'right')
+    # Set rtl on each run
+    for run in paragraph.runs:
+        rPr = run._r.get_or_add_rPr()
+        rtl = OxmlElement('w:rtl')
+        rPr.append(rtl)
+
+
 def build_document(items: List[ExportItem], policy: ExportPolicy) -> Any:  # docx.Document
     """
     Build a python-docx Document from the given items.
@@ -127,20 +197,16 @@ def build_document(items: List[ExportItem], policy: ExportPolicy) -> Any:  # doc
 
     Structure:
       1. Document title
-      2. Static TOC (list of all songs)
-      3. Per-song sections: heading + lyrics (+ optional page break)
+      2. Static TOC (clickable hyperlinks to bookmarks)
+      3. Per-song sections: heading (with bookmark) + lyrics (RTL)
     """
     from docx import Document
-    from docx.shared import Pt, RGBColor
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.oxml.ns import qn
-    from docx.oxml import OxmlElement
-    import lxml.etree as etree
+    from docx.shared import Pt
 
     doc = Document()
 
     # ── Title ───────────────────────────────────────────────────────────────
-    title_para = doc.add_heading("Top 100 Lyrics Collection", level=1)
+    doc.add_heading("Top 100 Lyrics Collection", level=1)
 
     subtitle = doc.add_paragraph()
     subtitle.add_run(
@@ -149,15 +215,15 @@ def build_document(items: List[ExportItem], policy: ExportPolicy) -> Any:  # doc
     ).italic = True
     doc.add_paragraph()
 
-    # ── Static TOC ──────────────────────────────────────────────────────────
-    toc_heading = doc.add_heading("Table of Contents", level=2)
+    # ── Static TOC with clickable hyperlinks ────────────────────────────────
+    doc.add_heading("Table of Contents", level=2)
 
-    for item in items:
-        p = doc.add_paragraph(style="List Number")
-        p.clear()  # remove auto-numbering, we supply position manually
-        p.style = doc.styles["Normal"]
-        run = p.add_run(_section_heading(item))
-        run.font.size = Pt(10)
+    for idx, item in enumerate(items):
+        p = doc.add_paragraph(style="Normal")
+        p.add_run("")  # placeholder run — will be replaced by hyperlink
+        heading_text = _section_heading(item)
+        anchor = f"song_{idx}"
+        _add_toc_hyperlink(p, heading_text, anchor)
 
     doc.add_paragraph()  # spacer
 
@@ -167,15 +233,23 @@ def build_document(items: List[ExportItem], policy: ExportPolicy) -> Any:  # doc
         heading_text = _section_heading(item)
         song_heading = doc.add_heading(heading_text, level=2)
 
+        # Add bookmark to heading for TOC hyperlink targets
+        _add_bookmark(song_heading, idx, f"song_{idx}")
+
+        # Apply RTL to heading
+        _set_rtl(song_heading)
+
         # Lyrics — preserve newlines from final_lyrics_text
         lyrics = (item.final_lyrics_text or "").strip()
         if lyrics:
             for line in lyrics.splitlines():
                 p = doc.add_paragraph(line if line.strip() else "")
                 p.paragraph_format.space_after = Pt(0)
+                _set_rtl(p)
         else:
             p = doc.add_paragraph("(no lyrics)")
             p.runs[0].italic = True
+            _set_rtl(p)
 
         # Page break before next song (but not after last)
         if policy.page_breaks and idx < len(items) - 1:
