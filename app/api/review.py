@@ -10,6 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import datetime, timezone
+
 from app.domain.dto import (
     ChartEntryDTO,
     ReviewDecisionRequest,
@@ -18,9 +20,11 @@ from app.domain.dto import (
     ReviewTaskDetailResponse,
     ReviewTaskListResponse,
     ReviewTaskSummary,
+    SetYouTubeRequest,
     YouTubeVideoDTO,
 )
 from app.infra.sa_models import ChartEntry, ReviewResult, ReviewTask, YouTubeVideo, async_session_factory
+from app.services import youtube_metadata_service
 from app.services import review_queue_service
 
 log = structlog.get_logger(__name__)
@@ -54,7 +58,7 @@ async def _enrich_task_summary(session: AsyncSession, task: ReviewTask) -> Revie
     return ReviewTaskSummary(
         id=task.id,
         chart_entry_id=task.chart_entry_id,
-        youtube_video_id_ref=task.youtube_video_id_ref,
+        youtube_video_id_ref=task.youtube_video_id_ref or None,
         review_status=task.review_status,  # type: ignore[arg-type]
         assigned_to=task.assigned_to,
         priority=task.priority,
@@ -103,10 +107,13 @@ async def get_task(
     )
     entry = entry_result.scalar_one_or_none()
 
-    yt_result = await session.execute(
-        select(YouTubeVideo).where(YouTubeVideo.youtube_video_id == task.youtube_video_id_ref)
-    )
-    yt_video = yt_result.scalar_one_or_none()
+    if task.youtube_video_id_ref:
+        yt_result = await session.execute(
+            select(YouTubeVideo).where(YouTubeVideo.youtube_video_id == task.youtube_video_id_ref)
+        )
+        yt_video = yt_result.scalar_one_or_none()
+    else:
+        yt_video = None
 
     latest_result_q = await session.execute(
         select(ReviewResult)
@@ -257,6 +264,62 @@ async def reopen_task(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     return ReviewTaskDTO.model_validate(task)
+
+
+@router.post(
+    "/tasks/{task_id}/set-youtube",
+    response_model=ReviewTaskDetailResponse,
+    summary="Link a YouTube video to a task (fetch metadata and update references)",
+)
+async def set_youtube(
+    task_id: int,
+    body: SetYouTubeRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ReviewTaskDetailResponse:
+    task = await review_queue_service.get_task(session, task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+
+    # Fetch / upsert YouTube metadata
+    try:
+        yt_video = await youtube_metadata_service.fetch_metadata(session, body.youtube_url)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Failed to fetch YouTube metadata: {exc}",
+        )
+
+    # Update task reference
+    task.youtube_video_id_ref = yt_video.youtube_video_id
+
+    # Update chart entry
+    entry_result = await session.execute(
+        select(ChartEntry).where(ChartEntry.id == task.chart_entry_id)
+    )
+    entry = entry_result.scalar_one_or_none()
+    if entry is not None:
+        entry.youtube_url = body.youtube_url
+        entry.youtube_video_id = yt_video.youtube_video_id
+        entry.has_youtube = True
+        entry.updated_at = datetime.now(tz=timezone.utc)
+
+    await session.flush()
+
+    latest_result_q = await session.execute(
+        select(ReviewResult)
+        .where(ReviewResult.review_task_id == task_id)
+        .order_by(ReviewResult.reviewed_at.desc())
+        .limit(1)
+    )
+    latest_result = latest_result_q.scalar_one_or_none()
+
+    return ReviewTaskDetailResponse(
+        task_id=task.id,
+        review_status=task.review_status,
+        chart_entry=ChartEntryDTO.model_validate(entry) if entry else None,
+        youtube_video=YouTubeVideoDTO.model_validate(yt_video),
+        latest_result=ReviewResultDTO.model_validate(latest_result) if latest_result else None,
+    )
 
 
 @router.post(

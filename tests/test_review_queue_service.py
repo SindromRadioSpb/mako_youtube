@@ -126,14 +126,13 @@ async def test_create_review_task_creates_new():
 
 
 @pytest.mark.asyncio
-async def test_create_review_task_skips_if_approved():
+async def test_create_review_task_skips_if_task_exists():
     """
-    When an approved result already exists for the video, returns None (skip).
+    When any task already exists for this youtube_video_id_ref, returns None (skip).
+    Dedup is now by existing task (any status), not by approved result.
     """
-    existing = MagicMock(spec=ReviewResult)
-    existing.decision = Decision.approved.value
-
-    session = _make_session(existing_result=existing)
+    existing_task = _make_task(youtube_video_id_ref="dQw4w9WgXcQ")
+    session = _make_session(task=existing_task)
 
     with patch(_AUDIT_PATCH):
         from app.services import review_queue_service

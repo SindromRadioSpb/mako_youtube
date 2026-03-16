@@ -141,6 +141,20 @@ class ReviewQueuePanel(tk.Frame):
         )
 
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=(12, 0))
+
+        self._fetch_btn = ttk.Button(
+            toolbar, text="↓ Fetch Chart", command=self._on_fetch_chart
+        )
+        self._fetch_btn.pack(side="left", padx=(8, 0))
+        _attach_tooltip(
+            self._fetch_btn,
+            "Fetch a new chart snapshot from hitlist.mako.co.il\n"
+            "and create review tasks for all new entries.\n\n"
+            "This may take 1–2 minutes (fetches YouTube metadata\n"
+            "for each entry via yt-dlp).",
+        )
+
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=(12, 0))
         self._auto_next_var = tk.BooleanVar(value=True)
         auto_next_cb = ttk.Checkbutton(
             toolbar,
@@ -174,8 +188,13 @@ class ReviewQueuePanel(tk.Frame):
             show="headings",
             selectmode="extended",   # PATCH-BULK-01: multi-select
         )
+        self._sort_state: Dict[str, bool] = {col: False for col in COLUMNS}  # False=asc
         for col in COLUMNS:
-            self._tree.heading(col, text=COLUMN_LABELS[col])
+            self._tree.heading(
+                col,
+                text=COLUMN_LABELS[col],
+                command=lambda c=col: self._sort_column(c),
+            )
         self._tree.column("task_id",        width=60,  anchor="e")
         self._tree.column("chart_position", width=65,  anchor="center")
         self._tree.column("artist_raw",     width=160)
@@ -368,7 +387,7 @@ class ReviewQueuePanel(tk.Frame):
             self._tree.delete(item)
 
         for task in self._tasks:
-            yt_present = "Y" if task.get("has_youtube") else "N"
+            yt_present = "Y" if task.get("has_youtube") else "—"
             created = (task.get("created_at") or "")[:19].replace("T", " ")
             row_tag = task.get("review_status", "")
             self._tree.insert(
@@ -533,11 +552,118 @@ class ReviewQueuePanel(tk.Frame):
     # Event handlers (single-item)
     # ------------------------------------------------------------------
 
+    def _sort_column(self, col: str) -> None:
+        """Sort treeview rows by the given column, toggling asc/desc."""
+        reverse = self._sort_state[col]
+        self._sort_state[col] = not reverse
+
+        # Map col name → task dict key
+        key_map = {
+            "task_id":        "id",
+            "chart_position": "chart_position",
+            "artist_raw":     "artist_raw",
+            "song_title_raw": "song_title_raw",
+            "youtube_present":"has_youtube",
+            "review_status":  "review_status",
+            "created_at":     "created_at",
+            "priority":       "priority",
+        }
+        task_key = key_map.get(col, col)
+
+        def _sort_key(task: Dict[str, Any]) -> Any:
+            v = task.get(task_key)
+            if v is None:
+                return ("" if reverse else "\xff")  # nulls last when asc, first when desc
+            return str(v).lower() if isinstance(v, str) else v
+
+        self._tasks.sort(key=_sort_key, reverse=reverse)
+        self._populate_tree()
+
+        # Update heading arrows
+        for c in COLUMNS:
+            label = COLUMN_LABELS[c]
+            if c == col:
+                arrow = " ▼" if reverse else " ▲"
+                self._tree.heading(c, text=label + arrow)
+            else:
+                self._tree.heading(c, text=label)
+
     def _on_filter_changed(self, _event: Any = None) -> None:
         self._load_tasks(self._status_var.get())
 
     def _on_refresh(self) -> None:
         self._load_tasks(self._status_var.get())
+
+    def _on_fetch_chart(self) -> None:
+        """Fetch a new chart snapshot from Mako and process it (background thread)."""
+        self._fetch_btn.configure(state="disabled")
+        self._refresh_btn.configure(state="disabled")
+        self._set_status("Step 1/2 — Fetching chart from hitlist.mako.co.il…")
+
+        def _worker() -> None:
+            try:
+                with httpx.Client(base_url=API_BASE_URL, timeout=60.0) as client:
+                    # Step 1: fetch snapshot
+                    r1 = client.post("/api/chart/fetch")
+                    r1.raise_for_status()
+                    snap = r1.json()
+                    snapshot_id = snap["snapshot_id"]
+                    discovered = snap["entries_discovered"]
+
+                def _step2(sid=snapshot_id, disc=discovered):
+                    if not self.winfo_exists():
+                        return
+                    self._set_status(
+                        f"Step 2/2 — Processing {disc} entries "
+                        f"(fetching YouTube metadata, may take 1–2 min)…"
+                    )
+                    threading.Thread(target=_process, args=(sid,), daemon=True).start()
+
+                self.after(0, _step2)
+
+            except Exception as exc:
+                msg = str(exc)
+                self.after(0, lambda m=msg: self._fetch_error(f"Fetch failed: {m}"))
+
+        def _process(snapshot_id: int) -> None:
+            try:
+                with httpx.Client(base_url=API_BASE_URL, timeout=300.0) as client:
+                    r2 = client.post(f"/api/chart/{snapshot_id}/process")
+                    r2.raise_for_status()
+                    result = r2.json()
+
+                tasks_created = result.get("tasks_created", "?")
+                yt_found = result.get("youtube_found", "?")
+                yt_missing = result.get("youtube_missing", "?")
+                meta_failed = result.get("metadata_failed", "?")
+
+                def _done():
+                    if not self.winfo_exists():
+                        return
+                    self._fetch_btn.configure(state="normal")
+                    self._refresh_btn.configure(state="normal")
+                    self._set_status(
+                        f"Chart updated — {tasks_created} new tasks created  "
+                        f"(YouTube: {yt_found} found, {yt_missing} missing, "
+                        f"{meta_failed} metadata failed)"
+                    )
+                    self._load_tasks(self._status_var.get())
+
+                self.after(0, _done)
+
+            except Exception as exc:
+                msg = str(exc)
+                self.after(0, lambda m=msg: self._fetch_error(f"Process failed: {m}"))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _fetch_error(self, msg: str) -> None:
+        if not self.winfo_exists():
+            return
+        self._fetch_btn.configure(state="normal")
+        self._refresh_btn.configure(state="normal")
+        self._set_status(f"Error: {msg}")
+        messagebox.showerror("Fetch Chart Failed", msg, parent=self)
 
     def _on_row_open(self, event: Any = None) -> None:
         """Open the focused row — bound to Enter, Space."""

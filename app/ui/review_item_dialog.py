@@ -437,6 +437,7 @@ class ReviewItemDialog(tk.Toplevel):
         self._title_raw_var = tk.StringVar(value=task_data.get("song_title_raw", "") or "—")
         self._pos_var       = tk.StringVar(value=str(task_data.get("chart_position", "")))
         self._yt_url_var    = tk.StringVar(value="Loading…")
+        self._set_yt_url_var = tk.StringVar()
 
         for r, (label, var) in enumerate([
             ("Artist (raw):", self._artist_var),
@@ -459,6 +460,26 @@ class ReviewItemDialog(tk.Toplevel):
         )
         url_lbl.grid(row=3, column=1, sticky="ew", pady=2)
         url_lbl.bind("<Button-1>", self._open_youtube_url)
+
+        # Row for manually setting / updating YouTube URL
+        ttk.Label(frame, text="Set YouTube URL:", anchor="e").grid(
+            row=4, column=0, sticky="e", padx=(0, 6), pady=2
+        )
+        set_yt_frame = ttk.Frame(frame)
+        set_yt_frame.grid(row=4, column=1, sticky="ew", pady=2)
+        set_yt_frame.columnconfigure(0, weight=1)
+        self._set_yt_entry = ttk.Entry(
+            set_yt_frame, textvariable=self._set_yt_url_var,
+            font=("Segoe UI", 9),
+        )
+        self._set_yt_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self._set_yt_btn = ttk.Button(
+            set_yt_frame, text="Fetch & Link", command=self._on_set_youtube, width=12
+        )
+        self._set_yt_btn.grid(row=0, column=1, sticky="e")
+        _add_context_menu(self._set_yt_entry)
+        _bind_entry_select_all(self._set_yt_entry)
+        _Tooltip(self._set_yt_btn, "Fetch YouTube metadata and link this video to the task")
 
     def _build_section_youtube(self, row: int) -> None:
         frame = ttk.LabelFrame(self._inner, text="YouTube Video", padding=6)
@@ -806,7 +827,11 @@ class ReviewItemDialog(tk.Toplevel):
             self._artist_var.set(ce["artist_raw"])
         if ce.get("song_title_raw"):
             self._title_raw_var.set(ce["song_title_raw"])
-        self._yt_url_var.set(ce.get("youtube_url") or "—")
+        yt_url = ce.get("youtube_url") or ""
+        self._yt_url_var.set(yt_url or "—")
+        # Pre-fill the Set YouTube entry with the current URL so operator can update it
+        if yt_url and not self._set_yt_url_var.get():
+            self._set_yt_url_var.set(yt_url)
 
         if youtube_data:
             self._yt_id_var.set(youtube_data.get("youtube_video_id") or "—")
@@ -822,6 +847,12 @@ class ReviewItemDialog(tk.Toplevel):
             self._desc_char_var.set(
                 f"{char_count} chars" if char_count else "no description"
             )
+        else:
+            self._yt_id_var.set("—")
+            self._yt_title_var.set("—")
+            self._yt_channel_var.set("—")
+            self._yt_published_var.set("—")
+            self._desc_char_var.set("no YouTube video linked")
 
         # Pre-fill final fields:
         # Priority 1 — latest ReviewResult (re-edit case: preserve previous work)
@@ -1001,6 +1032,66 @@ class ReviewItemDialog(tk.Toplevel):
             close_on_success=False,
             reload_on_success=True,
         )
+
+    def _on_set_youtube(self) -> None:
+        """Fetch YouTube metadata for the manually-entered URL and link it to this task."""
+        url = self._set_yt_url_var.get().strip()
+        if not url:
+            messagebox.showwarning("No URL", "Please enter a YouTube URL first.", parent=self)
+            return
+        op = self._ensure_operator_id()
+        if not op:
+            return
+        self._set_yt_btn.configure(state="disabled")
+        self._set_status("Fetching YouTube metadata…")
+
+        def _worker() -> None:
+            try:
+                with httpx.Client(base_url=API_BASE_URL, timeout=30.0) as client:
+                    resp = client.post(
+                        f"/api/review/tasks/{self._task_id}/set-youtube",
+                        json={"youtube_url": url, "operator_id": op},
+                    )
+                    resp.raise_for_status()
+
+                def _ok():
+                    if not self.winfo_exists():
+                        return
+                    self._set_yt_btn.configure(state="normal")
+                    self._set_status("YouTube video linked — reloading details…")
+                    self._load_full_detail()
+
+                self.after(0, _ok)
+
+            except httpx.HTTPStatusError as exc:
+                try:
+                    detail = exc.response.json().get("detail", exc.response.text[:200])
+                except Exception:
+                    detail = exc.response.text[:200]
+                sc = exc.response.status_code
+
+                def _err(s=sc, d=detail):
+                    if not self.winfo_exists():
+                        return
+                    self._set_yt_btn.configure(state="normal")
+                    self._set_status(f"YouTube link failed: HTTP {s}")
+                    self._show_error_banner(f"HTTP {s}: {d}")
+
+                self.after(0, _err)
+
+            except Exception as exc:
+                msg = str(exc)
+
+                def _gerr(m=msg):
+                    if not self.winfo_exists():
+                        return
+                    self._set_yt_btn.configure(state="normal")
+                    self._set_status(f"YouTube link error: {m}")
+                    self._show_error_banner(f"Connection error: {m}")
+
+                self.after(0, _gerr)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_approve(self) -> None:
         op = self._ensure_operator_id()

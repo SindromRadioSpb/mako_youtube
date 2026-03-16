@@ -74,7 +74,7 @@ class YouTubeVideoDTO(_BaseDTO):
 class ReviewTaskDTO(_BaseDTO):
     id: int
     chart_entry_id: int
-    youtube_video_id_ref: str
+    youtube_video_id_ref: Optional[str] = None
     review_status: ReviewStatus
     assigned_to: Optional[str] = None
     priority: int = 100
@@ -147,7 +147,7 @@ class ReviewTaskSummary(BaseModel):
 
     id: int
     chart_entry_id: int
-    youtube_video_id_ref: str
+    youtube_video_id_ref: Optional[str] = None
     review_status: ReviewStatus
     assigned_to: Optional[str] = None
     priority: int
@@ -177,6 +177,12 @@ class ReviewDecisionRequest(BaseModel):
     final_song_title: Optional[str] = None
     final_lyrics_text: Optional[str] = None
     review_notes: Optional[str] = None
+
+
+class SetYouTubeRequest(BaseModel):
+    """Body for the set-youtube endpoint."""
+    youtube_url: str
+    operator_id: str
 
 
 class ReviewTaskDetailResponse(BaseModel):

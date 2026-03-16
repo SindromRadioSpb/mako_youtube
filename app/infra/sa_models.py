@@ -197,10 +197,10 @@ class ReviewTask(Base):
     chart_entry_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("chart_entry.id", ondelete="CASCADE"), nullable=False
     )
-    youtube_video_id_ref: Mapped[str] = mapped_column(
+    youtube_video_id_ref: Mapped[Optional[str]] = mapped_column(
         Text,
-        ForeignKey("youtube_video.youtube_video_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("youtube_video.youtube_video_id", ondelete="SET NULL"),
+        nullable=True,
     )
     review_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
     assigned_to: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -218,6 +218,7 @@ class ReviewTask(Base):
         foreign_keys="[ReviewTask.youtube_video_id_ref]",
         primaryjoin="ReviewTask.youtube_video_id_ref == YouTubeVideo.youtube_video_id",
         back_populates="review_tasks",
+        uselist=False,
     )
     result: Mapped[Optional["ReviewResult"]] = relationship(
         "ReviewResult", back_populates="task", uselist=False, cascade="all, delete-orphan"

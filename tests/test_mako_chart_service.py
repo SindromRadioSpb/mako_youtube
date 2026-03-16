@@ -203,3 +203,21 @@ def test_parse_redux_storage_empty_items():
     """Returns empty list when chart.items is empty."""
     html = "<html><script>window['__REDUX_STORAGE'] = {\"chart\":{\"items\":[]}};</script></html>"
     assert _parse_redux_storage(html) == []
+
+
+def test_parse_redux_storage_fallback_artist_title():
+    """Falls back to 'artist'/'title' when 'altArtist'/'altTitle' are absent/None."""
+    items = [{"position": 1, "altArtist": None, "altTitle": None,
+              "artist": "Bad Bunny", "title": "NUEVAYoL", "youtubeUrl": None}]
+    entries = _parse_redux_storage(_make_redux_html(items))
+    assert entries[0]["artist_raw"] == "Bad Bunny"
+    assert entries[0]["song_title_raw"] == "NUEVAYoL"
+
+
+def test_parse_redux_storage_alt_takes_priority_over_fallback():
+    """'altArtist'/'altTitle' take priority over 'artist'/'title' when both present."""
+    items = [{"position": 1, "altArtist": "Alt Artist", "altTitle": "Alt Title",
+              "artist": "Base Artist", "title": "Base Title", "youtubeUrl": None}]
+    entries = _parse_redux_storage(_make_redux_html(items))
+    assert entries[0]["artist_raw"] == "Alt Artist"
+    assert entries[0]["song_title_raw"] == "Alt Title"

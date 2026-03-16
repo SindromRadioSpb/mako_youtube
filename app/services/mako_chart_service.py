@@ -109,6 +109,7 @@ async def process_snapshot(session: AsyncSession, snapshot_id: int) -> Dict[str,
     )
 
     from app.services import review_queue_service, youtube_metadata_service
+    from app.infra.sa_models import ReviewTask
 
     youtube_found = 0
     youtube_missing = 0
@@ -121,41 +122,66 @@ async def process_snapshot(session: AsyncSession, snapshot_id: int) -> Dict[str,
         entry = await _parse_entry(session, snapshot_id, raw)
         processed += 1
 
+        youtube_video_id_ref: Optional[str] = None
+
         if not entry.has_youtube:
             youtube_missing += 1
-            continue
-
-        youtube_found += 1
-
-        # Fetch YouTube metadata and create review task
-        try:
-            yt_video = await youtube_metadata_service.fetch_metadata(
-                session, entry.youtube_url  # type: ignore[arg-type]
-            )
-            entry.pipeline_status = PipelineStatus.metadata_fetched.value
-            entry.updated_at = datetime.now(tz=timezone.utc)
-            metadata_ok += 1
-
-            task = await review_queue_service.create_review_task(
-                session,
-                chart_entry_id=entry.id,
-                youtube_video_id_ref=yt_video.youtube_video_id,
-            )
-            if task is not None:
-                entry.pipeline_status = PipelineStatus.ready_for_manual_review.value
+        else:
+            youtube_found += 1
+            try:
+                yt_video = await youtube_metadata_service.fetch_metadata(
+                    session, entry.youtube_url  # type: ignore[arg-type]
+                )
+                entry.pipeline_status = PipelineStatus.metadata_fetched.value
                 entry.updated_at = datetime.now(tz=timezone.utc)
-                tasks_created += 1
+                metadata_ok += 1
+                youtube_video_id_ref = yt_video.youtube_video_id
+            except Exception as exc:
+                entry.pipeline_status = PipelineStatus.metadata_failed.value
+                entry.updated_at = datetime.now(tz=timezone.utc)
+                metadata_failed += 1
+                log.warning(
+                    "metadata_fetch_failed_during_process",
+                    chart_entry_id=entry.id,
+                    youtube_url=entry.youtube_url,
+                    error=str(exc),
+                )
 
-        except Exception as exc:
-            entry.pipeline_status = PipelineStatus.metadata_failed.value
+        # Cross-snapshot dedup for tasks without a YouTube video reference:
+        # covers both (a) no YouTube link and (b) YouTube link but metadata failed.
+        if youtube_video_id_ref is None:
+            if entry.artist_norm or entry.song_title_norm:
+                # Dedup by artist+title across snapshots
+                existing = await session.execute(
+                    select(ReviewTask)
+                    .join(ChartEntry, ChartEntry.id == ReviewTask.chart_entry_id)
+                    .where(ChartEntry.artist_norm == entry.artist_norm)
+                    .where(ChartEntry.song_title_norm == entry.song_title_norm)
+                    .limit(1)
+                )
+            else:
+                # Empty slot (no artist, no title): dedup by chart_position across snapshots
+                existing = await session.execute(
+                    select(ReviewTask)
+                    .join(ChartEntry, ChartEntry.id == ReviewTask.chart_entry_id)
+                    .where(ChartEntry.chart_position == entry.chart_position)
+                    .where(ChartEntry.artist_raw == None)
+                    .where(ChartEntry.song_title_raw == None)
+                    .limit(1)
+                )
+            if existing.scalar_one_or_none() is not None:
+                await session.flush()
+                continue
+
+        task = await review_queue_service.create_review_task(
+            session,
+            chart_entry_id=entry.id,
+            youtube_video_id_ref=youtube_video_id_ref,
+        )
+        if task is not None:
+            entry.pipeline_status = PipelineStatus.ready_for_manual_review.value
             entry.updated_at = datetime.now(tz=timezone.utc)
-            metadata_failed += 1
-            log.warning(
-                "metadata_fetch_failed_during_process",
-                chart_entry_id=entry.id,
-                youtube_url=entry.youtube_url,
-                error=str(exc),
-            )
+            tasks_created += 1
 
         await session.flush()
 
@@ -260,8 +286,8 @@ def _parse_redux_storage(html: str) -> List[Dict[str, Any]]:
         entries.append(
             {
                 "position": item.get("position", len(entries) + 1),
-                "artist_raw": item.get("altArtist") or None,
-                "song_title_raw": item.get("altTitle") or None,
+                "artist_raw": item.get("altArtist") or item.get("artist") or None,
+                "song_title_raw": item.get("altTitle") or item.get("title") or None,
                 "youtube_url": youtube_url,
             }
         )

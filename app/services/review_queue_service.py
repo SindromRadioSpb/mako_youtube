@@ -27,36 +27,50 @@ log = structlog.get_logger(__name__)
 async def create_review_task(
     session: AsyncSession,
     chart_entry_id: int,
-    youtube_video_id_ref: str,
+    youtube_video_id_ref: Optional[str] = None,
     priority: int = 100,
 ) -> Optional[ReviewTask]:
     """
-    Create a new ReviewTask for the given chart_entry_id / youtube_video_id_ref
-    pair, unless an approved or approved_with_edits result already exists for
-    this YouTube video — in which case the call is a no-op and returns None.
+    Create a new ReviewTask for the given chart_entry_id.
+
+    Dedup logic:
+    - When youtube_video_id_ref is provided: skip if an approved/approved_with_edits
+      result already exists for this YouTube video.
+    - When youtube_video_id_ref is None (no YouTube): skip if any task already
+      exists for this chart_entry_id (one task per entry).
 
     Returns:
         The newly created ReviewTask, or None if skipped due to dedup.
     """
-    # Dedup: check for an existing positive review result for this video
-    dedup_result = await session.execute(
-        select(ReviewResult)
-        .join(ReviewTask, ReviewTask.id == ReviewResult.review_task_id)
-        .where(ReviewTask.youtube_video_id_ref == youtube_video_id_ref)
-        .where(
-            ReviewResult.decision.in_(
-                [Decision.approved.value, Decision.approved_with_edits.value]
+    if youtube_video_id_ref is not None:
+        # Dedup: skip if ANY task already exists for this YouTube video,
+        # regardless of review status (prevents duplicate tasks across snapshots).
+        existing = await session.execute(
+            select(ReviewTask)
+            .where(ReviewTask.youtube_video_id_ref == youtube_video_id_ref)
+            .limit(1)
+        )
+        if existing.scalar_one_or_none() is not None:
+            log.info(
+                "review_task_skipped_dedup",
+                chart_entry_id=chart_entry_id,
+                youtube_video_id_ref=youtube_video_id_ref,
             )
+            return None
+    else:
+        # No YouTube: dedup by chart_entry_id — one task per entry.
+        # Cross-snapshot dedup is handled upstream in process_snapshot.
+        existing = await session.execute(
+            select(ReviewTask)
+            .where(ReviewTask.chart_entry_id == chart_entry_id)
+            .limit(1)
         )
-        .limit(1)
-    )
-    if dedup_result.scalar_one_or_none() is not None:
-        log.info(
-            "review_task_skipped_dedup",
-            chart_entry_id=chart_entry_id,
-            youtube_video_id_ref=youtube_video_id_ref,
-        )
-        return None
+        if existing.scalar_one_or_none() is not None:
+            log.info(
+                "review_task_skipped_dedup_no_youtube",
+                chart_entry_id=chart_entry_id,
+            )
+            return None
 
     task = ReviewTask(
         chart_entry_id=chart_entry_id,
@@ -72,7 +86,7 @@ async def create_review_task(
         session,
         task_id=task.id,
         chart_entry_id=chart_entry_id,
-        youtube_video_id_ref=youtube_video_id_ref,
+        youtube_video_id_ref=youtube_video_id_ref or "",
     )
 
     log.info(
