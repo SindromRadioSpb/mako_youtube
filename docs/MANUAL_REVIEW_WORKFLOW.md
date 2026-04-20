@@ -28,8 +28,10 @@ The main panel displays a filterable table of review tasks:
 **Refresh button** — reloads the task list from the API.
 
 **Row colors:**
+- Orange — `pending`
 - Blue — `in_review`
 - Green — `approved`
+- Dark green — `approved_with_edits`
 - Red — `rejected`
 - Brown — `no_useful_text`
 
@@ -54,7 +56,7 @@ Displays the original chart data:
 - Published date
 
 #### 3. Description (raw — read only)
-A scrollable read-only text widget showing the full video description as fetched by yt-dlp. Operators read this to determine if it contains lyrics.
+A scrollable read-only text widget showing the full video description as fetched by the metadata service. The service first parses the YouTube watch page HTML and falls back to `yt-dlp` only if the page parser stops yielding usable metadata. Operators read this text to determine if it contains lyrics.
 
 #### 4. Manual Finalization
 Editable fields for the operator to fill in:
@@ -122,7 +124,7 @@ Each operator decision updates the `chart_entry.pipeline_status` field:
 | Reject | `rejected` |
 | No Useful Text | `no_useful_text` |
 
-All decisions are permanent (terminal states). Once a task reaches `approved`, `approved_with_edits`, `rejected`, or `no_useful_text`, no further transitions are possible and all action buttons are disabled in the UI.
+Review decisions are terminal for the current submission, but the UI supports explicit reopening. Once a task reaches `approved`, `approved_with_edits`, `rejected`, or `no_useful_text`, the edit buttons are disabled and a **Reopen for Editing** action is shown instead.
 
 ---
 
@@ -151,7 +153,7 @@ The `.docx` file contains the following sections:
 | Header | Task ID, review status, export timestamp (UTC) |
 | Chart Source | Chart position, artist (raw), title (raw), YouTube URL |
 | YouTube Metadata | Video ID, video title, channel, published date, canonical URL |
-| Raw Description | Full description_raw text as fetched by yt-dlp |
+| Raw Description | Full `description_raw` text as fetched by the metadata service |
 | Final Fields | Final artist, final title, lyrics text (as currently entered in the dialog), review notes |
 | Footer notice | Warning that Word is not a source of truth |
 
@@ -194,3 +196,4 @@ submitted data.
 - `start_review` validates that the task is not already assigned to a different operator before claiming it.
 - If two operators try to start the same task simultaneously, the second one receives a `409 Conflict` response from the API.
 - An operator who has started a task but has not yet submitted a decision can release the task back to `ready_for_manual_review` by closing the dialog without acting (the task remains in `in_review` and must be released via the API or by an admin).
+- Terminal tasks can be reopened explicitly through the UI or `POST /api/review/tasks/{task_id}/reopen`, which returns them to `in_review`.

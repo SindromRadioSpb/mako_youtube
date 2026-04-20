@@ -1,14 +1,14 @@
 @echo off
 setlocal
 
-:: ── Config ────────────────────────────────────────────────────────────────
+REM Config
 set DB_PORT=5433
 set DB_USER=openclaw
 set DB_PASS=openclaw
 set DB_NAME=openclaw_mako
 set PYTHONIOENCODING=utf-8
 
-:: ── Auto-select available API port (try 8000, 8001, 8080, 9000, 9001) ──────
+REM Auto-select available API port (try 8000, 8001, 8080, 9000, 9001)
 set API_PORT=
 for %%P in (8000 8001 8080 9000 9001) do (
     if not defined API_PORT (
@@ -30,7 +30,7 @@ echo [info] Using API port %API_PORT%.
 set DATABASE_URL=postgresql+asyncpg://%DB_USER%:%DB_PASS%@localhost:%DB_PORT%/%DB_NAME%
 set API_BASE_URL=http://localhost:%API_PORT%
 
-:: ── Step 1: PostgreSQL via Docker ─────────────────────────────────────────
+REM Step 1: PostgreSQL via Docker
 echo [1/3] Starting PostgreSQL (Docker)...
 docker compose up -d db >nul 2>&1
 if errorlevel 1 (
@@ -55,9 +55,9 @@ goto wait_db
 :db_ready
 echo     DB ready on localhost:%DB_PORT%.
 
-:: ── Step 2: API server ────────────────────────────────────────────────────
+REM Step 2: API server
 echo [2/3] Starting API on port %API_PORT%...
-start "OpenClaw API" cmd /k "cd /d %~dp0 && set DATABASE_URL=%DATABASE_URL%&& set PYTHONIOENCODING=utf-8&& uvicorn main:app --host 127.0.0.1 --port %API_PORT% --no-access-log"
+start "OpenClaw API" cmd /k "cd /d %~dp0 && set DATABASE_URL=%DATABASE_URL%&& set PYTHONIOENCODING=utf-8&& python -m uvicorn main:app --host 127.0.0.1 --port %API_PORT% --no-access-log"
 
 echo     Waiting for API...
 set /a j=0
@@ -75,7 +75,7 @@ goto wait_api
 :api_ready
 echo     API ready at http://localhost:%API_PORT%/docs
 
-:: ── Step 3: Review UI ─────────────────────────────────────────────────────
+REM Step 3: Review UI
 echo [3/3] Launching Review UI...
 start "OpenClaw UI" cmd /c "cd /d %~dp0 && set API_BASE_URL=%API_BASE_URL%&& set PYTHONIOENCODING=utf-8&& python ui_launcher.py"
 

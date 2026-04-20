@@ -8,6 +8,8 @@ from __future__ import annotations
 import pytest
 
 from app.services.youtube_metadata_service import (
+    _extract_json_object_from_html,
+    _parse_watch_html_metadata,
     canonicalize_url,
     extract_video_id,
 )
@@ -133,3 +135,29 @@ def test_non_retryable_missing_video_id():
     """
     assert extract_video_id("") is None
     assert extract_video_id("   ") is None
+
+
+def test_extract_json_object_from_html_handles_nested_quotes():
+    html = (
+        '<script>var irrelevant = 1;</script>'
+        '<script>ytInitialPlayerResponse = {"videoDetails":{"title":"Song {Live}",'
+        '"shortDescription":"Line 1\\\\nLine 2","author":"Channel"},"microformat":'
+        '{"playerMicroformatRenderer":{"publishDate":"2026-04-21"}}};</script>'
+    )
+    data = _extract_json_object_from_html(html, "ytInitialPlayerResponse = ")
+    assert data["videoDetails"]["title"] == "Song {Live}"
+    assert data["videoDetails"]["author"] == "Channel"
+
+
+def test_parse_watch_html_metadata_returns_expected_fields():
+    html = (
+        '<script>ytInitialPlayerResponse = {"videoDetails":{"title":"Track Name",'
+        '"shortDescription":"Lyrics line 1\\nLyrics line 2","author":"Artist Channel"},'
+        '"microformat":{"playerMicroformatRenderer":{"publishDate":"2026-04-20"}}};'
+        '</script>'
+    )
+    data = _parse_watch_html_metadata(html)
+    assert data["video_title"] == "Track Name"
+    assert data["channel_title"] == "Artist Channel"
+    assert data["description_raw"] == "Lyrics line 1\nLyrics line 2"
+    assert data["published_at"].isoformat() == "2026-04-20T00:00:00+00:00"

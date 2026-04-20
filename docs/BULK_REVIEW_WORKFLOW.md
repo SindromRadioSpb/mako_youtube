@@ -199,12 +199,12 @@ If a single task fails (API error, stale state, network issue):
 
 ```powershell
 # Start backend
-cd J:\Project_Vibe\openclaw_mako_youtube
+cd E:\projects\Project_Vibe\openclaw_mako_youtube
 .\start.bat
 
 # Launch UI
-$env:API_BASE_URL = "http://localhost:9000"
-python -m app.ui.review_queue_panel
+$env:API_BASE_URL = "http://localhost:8000"
+python ui_launcher.py
 
 # Run all tests
 python -m pytest tests/ -v

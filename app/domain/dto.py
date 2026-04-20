@@ -121,6 +121,9 @@ class ProcessSnapshotResponse(BaseModel):
     processed_entries: int
     youtube_found: int
     youtube_missing: int
+    metadata_ok: int = 0
+    metadata_failed: int = 0
+    tasks_created: int = 0
 
 
 class YouTubeMetadataRequest(BaseModel):
@@ -211,4 +214,3 @@ class ExportItemDTO(BaseModel):
 class ExportItemsResponse(BaseModel):
     items: List["ExportItemDTO"]
     total: int = 0
-

@@ -71,7 +71,7 @@ Deduplicated YouTube video metadata. One row per unique `youtube_video_id`.
 | `id` | BIGSERIAL PK | |
 | `youtube_video_id` | TEXT UNIQUE | 11-character YouTube video ID |
 | `canonical_url` | TEXT | `https://www.youtube.com/watch?v={id}` |
-| `video_title` | TEXT | Video title from yt-dlp |
+| `video_title` | TEXT | Video title from the metadata fetch pipeline |
 | `channel_title` | TEXT | Channel / uploader name |
 | `description_raw` | TEXT | Full video description text |
 | `published_at` | TIMESTAMPTZ | Video upload date |
@@ -194,7 +194,7 @@ error state can transition back to → discovered (re-process)
 
 ## Business Rules
 
-1. **Deduplication:** A `review_task` is never created for a `youtube_video_id` that already has an `approved` or `approved_with_edits` result. The same video appearing in multiple chart snapshots generates at most one approved result.
+1. **Deduplication:** A `review_task` is never created for a `youtube_video_id` that already has another `review_task`. The same video appearing in multiple chart snapshots generates at most one task record.
 
 2. **Terminal states:** `youtube_missing`, `approved`, `approved_with_edits`, `rejected`, `no_useful_text` are all terminal. Once a `chart_entry` reaches one of these states, no further pipeline status transitions are permitted.
 
@@ -204,4 +204,4 @@ error state can transition back to → discovered (re-process)
 
 5. **Audit trail:** Every state transition and review decision is recorded in `audit_event`. The audit log is append-only and must never be modified or deleted.
 
-6. **Re-processing:** Entries stuck in `metadata_failed` can be re-processed via `POST /api/admin/reprocess/{chart_entry_id}`. This re-runs the yt-dlp fetch and updates the existing `youtube_video` record in place.
+6. **Re-processing:** Entries stuck in `metadata_failed` can be re-processed via `POST /api/admin/reprocess/{chart_entry_id}`. This re-runs the metadata fetch pipeline and updates the existing `youtube_video` record in place.
